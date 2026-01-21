@@ -103,6 +103,7 @@ struct ContentView: View {
         .tint(theme.tint)
         .task {
             preloadViews()
+            preloadContextMenu()
         }
     }
 
@@ -126,12 +127,13 @@ struct ContentView: View {
         _ = UIImage(systemName: "waveform")
         _ = UIImage(systemName: "square.grid.2x2")
         _ = UIImage(systemName: "circle.grid.cross")
+
         _ = Button("", action: {})
         _ = VStack { Text("") }
         _ = HStack { Text("") }
         _ = AnyTransition.opacity
         _ = AnyTransition.scale
-        
+
         let _ = Menu("x") {
             Button("a") {}
             Button("b") {}
@@ -139,7 +141,31 @@ struct ContentView: View {
 
         _ = UIAlertController(title: "", message: "", preferredStyle: .alert)
 
-        let _ = NavigationLink(destination: EmptyView()) { EmptyView() }
+        let _ = NavigationLink(destination: EmptyView()) {
+            EmptyView()
+        }
+    }
+
+
+
+    private func preloadContextMenu() {
+        let dummyView = UIView(frame: .zero)
+        let interaction = UIContextMenuInteraction(delegate: DummyContextMenuDelegate())
+        let _ = UIViewPropertyAnimator(duration: 0.25, curve: .easeInOut)
+        dummyView.addInteraction(interaction)
+    }
+    
+    
+    
+    private class DummyContextMenuDelegate: NSObject, UIContextMenuInteractionDelegate {
+        func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                                    configurationForMenuAtLocation location: CGPoint)
+        -> UIContextMenuConfiguration? {
+            return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
+                let action = UIAction(title: "x") { _ in }
+                return UIMenu(title: "", children: [action])
+            }
+        }
     }
 
     private var playlistsPage: some View {
