@@ -26,11 +26,6 @@ struct ContentView: View {
     @State private var showingBatchPlaylistMenu = false
     @State private var showingBatchDeleteAlert = false
     @State private var showingSettings = false
-    @State private var useSongSquares = UserDefaults.standard.bool(forKey: "useSongSquares")
-    @State private var usePlaylistSquares = UserDefaults.standard.bool(forKey: "usePlaylistSquares")
-    @State private var songGridColumns = UserDefaults.standard.integer(forKey: "songGridColumns") == 0 ? 3 : UserDefaults.standard.integer(forKey: "songGridColumns")
-    @State private var playlistGridColumns = UserDefaults.standard.integer(forKey: "playlistGridColumns") == 0 ? 3 : UserDefaults.standard.integer(forKey: "playlistGridColumns")
-
 
     
     
@@ -115,389 +110,45 @@ struct ContentView: View {
                     newPlaylistName: $newPlaylistName
                 )
             } else {
-                if usePlaylistSquares {
-                    PlaylistsGridView(
-                        audioManager: audioManager,
-                        navigateToPlayer: $navigateToPlayer,
-                        selectedAudioFile: $selectedAudioFile,
-                        showingRenameAlert: $showingRenameAlert,
-                        renamingAudioFile: $renamingAudioFile,
-                        newFileName: $newFileName,
-                        showingRenamePlaylistAlert: $showingRenamePlaylistAlert,
-                        renamingPlaylist: $renamingPlaylist,
-                        newPlaylistNameRename: $newPlaylistNameRename,
-                        artworkTarget: $artworkTarget,
-                        gridColumns: $playlistGridColumns,
-                        showingCreatePlaylistAlert: $showingCreatePlaylistAlert,
-                        newPlaylistName: $newPlaylistName
-                    )
-
-                } else {
-                    PlaylistsListView(
-                        audioManager: audioManager,
-                        navigateToPlayer: $navigateToPlayer,
-                        selectedAudioFile: $selectedAudioFile,
-                        showingRenameAlert: $showingRenameAlert,
-                        renamingAudioFile: $renamingAudioFile,
-                        newFileName: $newFileName,
-                        showingRenamePlaylistAlert: $showingRenamePlaylistAlert,
-                        renamingPlaylist: $renamingPlaylist,
-                        newPlaylistNameRename: $newPlaylistNameRename,
-                        artworkTarget: $artworkTarget,
-                        showingCreatePlaylistAlert: $showingCreatePlaylistAlert,
-                        newPlaylistName: $newPlaylistName
-                    )
-                }
+                PlaylistsListView(
+                    audioManager: audioManager,
+                    navigateToPlayer: $navigateToPlayer,
+                    selectedAudioFile: $selectedAudioFile,
+                    showingRenameAlert: $showingRenameAlert,
+                    renamingAudioFile: $renamingAudioFile,
+                    newFileName: $newFileName,
+                    showingRenamePlaylistAlert: $showingRenamePlaylistAlert,
+                    renamingPlaylist: $renamingPlaylist,
+                    newPlaylistNameRename: $newPlaylistNameRename,
+                    artworkTarget: $artworkTarget,
+                    showingCreatePlaylistAlert: $showingCreatePlaylistAlert,
+                    newPlaylistName: $newPlaylistName
+                )
             }
         }
     }
-
 
     private var songsPage: some View {
         ZStack {
             if audioManager.audioFiles.isEmpty {
                 EmptySongStateView(showingFilePicker: $showingFilePicker)
             } else {
-                if useSongSquares {
-                    SongsGridView(
-                        audioManager: audioManager,
-                        navigateToPlayer: $navigateToPlayer,
-                        selectedAudioFile: $selectedAudioFile,
-                        isMultiSelectMode: $isMultiSelectMode,
-                        selectedFileIDs: $selectedFileIDs,
-                        artworkTarget: $artworkTarget,
-                        gridColumns: $songGridColumns,
-                        showingFilePicker: $showingFilePicker
-                    )
-                } else {
-                    SongsListView(
-                        audioManager: audioManager,
-                        navigateToPlayer: $navigateToPlayer,
-                        selectedAudioFile: $selectedAudioFile,
-                        showingRenameAlert: $showingRenameAlert,
-                        renamingAudioFile: $renamingAudioFile,
-                        newFileName: $newFileName,
-                        isReorderMode: $isReorderMode,
-                        artworkTarget: $artworkTarget,
-                        isMultiSelectMode: $isMultiSelectMode,
-                        selectedFileIDs: $selectedFileIDs,
-                        showingFilePicker: $showingFilePicker
-                    )
-                }
+                SongsListView(
+                    audioManager: audioManager,
+                    navigateToPlayer: $navigateToPlayer,
+                    selectedAudioFile: $selectedAudioFile,
+                    showingRenameAlert: $showingRenameAlert,
+                    renamingAudioFile: $renamingAudioFile,
+                    newFileName: $newFileName,
+                    isReorderMode: $isReorderMode,
+                    artworkTarget: $artworkTarget,
+                    isMultiSelectMode: $isMultiSelectMode,
+                    selectedFileIDs: $selectedFileIDs,
+                    showingFilePicker: $showingFilePicker
+                )
             }
         }
     }
-
-    
-    struct PlaylistsGridView: View {
-        @ObservedObject var audioManager: AudioManager
-        @EnvironmentObject var theme: ThemeManager
-        @Binding var navigateToPlayer: Bool
-        @Binding var selectedAudioFile: AudioFile?
-        @Binding var showingRenameAlert: Bool
-        @Binding var renamingAudioFile: AudioFile?
-        @Binding var newFileName: String
-        @Binding var showingRenamePlaylistAlert: Bool
-        @Binding var renamingPlaylist: Playlist?
-        @Binding var newPlaylistNameRename: String
-        @Binding var artworkTarget: ArtworkTarget?
-        @Binding var gridColumns: Int
-        @Binding var showingCreatePlaylistAlert: Bool
-        @Binding var newPlaylistName: String
-        @State private var isMultiSelectMode = false
-        @State private var selectedFileIDs: Set<UUID> = []
-        @State private var showingBatchPlaylistMenu = false
-        @State private var showingBatchRemoveAlert = false
-        @State private var showingBatchDeleteAlert = false
-        @State private var showingShareSheet = false
-        @State private var shareURLs: [URL] = []
-
-        var body: some View {
-            ScrollView {
-                VStack(spacing: 16) {
-                    Button {
-                        newPlaylistName = ""
-                        showingCreatePlaylistAlert = true
-                    } label: {
-                        Text("Create Playlist")
-                            .font(.headline)
-                            .foregroundStyle(theme.accentColor)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
-                    }
-
-                    LazyVGrid(
-                        columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: max(gridColumns, 1)),
-                        spacing: 16
-                    ) {
-                        ForEach(audioManager.sortedPlaylists) { playlist in
-                            NavigationLink {
-                                PlaylistDetailView(
-                                    playlist: playlist,
-                                    audioManager: audioManager,
-                                    navigateToPlayer: $navigateToPlayer,
-                                    selectedAudioFile: $selectedAudioFile,
-                                    showingRenameAlert: $showingRenameAlert,
-                                    renamingAudioFile: $renamingAudioFile,
-                                    newFileName: $newFileName,
-                                    artworkTarget: $artworkTarget
-                                )
-                            } label: {
-                                VStack(spacing: 6) {
-                                    ZStack {
-                                        if let art = playlist.artworkImageName,
-                                           let ui = audioManager.loadArtworkImage(art) {
-                                            Image(uiImage: ui)
-                                                .resizable()
-                                                .aspectRatio(1, contentMode: .fill)
-                                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                        } else {
-                                            Image(systemName: "music.note.list")
-                                                .font(.largeTitle)
-                                                .foregroundStyle(theme.secondaryTextColor)
-                                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                                .aspectRatio(1, contentMode: .fit)
-                                        }
-                                    }
-
-                                    Text(playlist.name)
-                                        .font(.caption)
-                                        .foregroundStyle(theme.textColor)
-                                        .lineLimit(1)
-                                }
-                                .padding(.horizontal, 4)
-                            }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                Button {
-                                    artworkTarget = .playlist(playlist)
-                                } label: {
-                                    Label("Set Artwork", systemImage: "photo")
-                                }
-
-                                Button {
-                                    renamingPlaylist = playlist
-                                    newPlaylistNameRename = playlist.name
-                                    showingRenamePlaylistAlert = true
-                                } label: {
-                                    Label("Rename", systemImage: "pencil")
-                                }
-
-                                Button(role: .destructive) {
-                                    audioManager.deletePlaylist(playlist)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding()
-            }
-        }
-    }
-
-
-
-
-
-    
-    struct SongsGridView: View {
-        @ObservedObject var audioManager: AudioManager
-        @EnvironmentObject var theme: ThemeManager
-        @Binding var navigateToPlayer: Bool
-        @Binding var selectedAudioFile: AudioFile?
-        @Binding var isMultiSelectMode: Bool
-        @Binding var selectedFileIDs: Set<UUID>
-        @Binding var artworkTarget: ArtworkTarget?
-        @Binding var gridColumns: Int
-        @Binding var showingFilePicker: Bool
-        @State private var showingBatchPlaylistMenu = false
-        @State private var showingBatchDeleteAlert = false
-        @State private var showingShareSheet = false
-        @State private var shareURLs: [URL] = []
-
-        var body: some View {
-            ScrollView {
-                VStack(spacing: 16) {
-                    Button {
-                        showingFilePicker = true
-                    } label: {
-                        Text("Add Songs")
-                            .font(.headline)
-                            .foregroundStyle(theme.accentColor)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
-                    }
-
-                    LazyVGrid(
-                        columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: max(gridColumns, 1)),
-                        spacing: 16
-                    ) {
-                        ForEach(audioManager.displayedSongs) { audioFile in
-                            let isPlaying =
-                                audioManager.currentlyPlayingID == audioFile.id &&
-                                audioManager.playingFromSongsTab == true
-
-                            VStack(spacing: 6) {
-                                ZStack {
-                                    if let name = audioFile.artworkImageName,
-                                       let ui = audioManager.loadArtworkImage(name) {
-                                        Image(uiImage: ui)
-                                            .resizable()
-                                            .aspectRatio(1, contentMode: .fill)
-                                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                                    } else {
-                                        Image(systemName: "face.smiling")
-                                            .font(.largeTitle)
-                                            .foregroundStyle(theme.secondaryTextColor)
-                                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                            .aspectRatio(1, contentMode: .fit)
-                                    }
-
-                                    if isMultiSelectMode && selectedFileIDs.contains(audioFile.id) {
-                                        Color.black.opacity(0.4)
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .font(.system(size: 28))
-                                            .foregroundStyle(theme.accentColor)
-                                    }
-                                }
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(isPlaying ? theme.accentColor : .clear, lineWidth: 2)
-                                )
-                                .onTapGesture {
-                                    Task {
-                                        if isMultiSelectMode {
-                                            if selectedFileIDs.contains(audioFile.id) {
-                                                selectedFileIDs.remove(audioFile.id)
-                                            } else {
-                                                selectedFileIDs.insert(audioFile.id)
-                                            }
-                                        } else {
-                                            await audioManager.playAsync(
-                                                audioFile,
-                                                context: audioManager.displayedSongs,
-                                                fromSongsTab: true
-                                            )
-                                        }
-                                    }
-                                }
-
-                                .contextMenu {
-                                    if isMultiSelectMode && selectedFileIDs.contains(audioFile.id) {
-                                        Button {
-                                            shareURLs = prepareShareURLs()
-                                            showingShareSheet = true
-                                        } label: {
-                                            Label("Share \(selectedFileIDs.count) Files", systemImage: "square.and.arrow.up")
-                                        }
-
-                                        Button {
-                                            artworkTarget = .multipleFiles(selectedFileIDs)
-                                        } label: {
-                                            Label("Set Artwork for \(selectedFileIDs.count)", systemImage: "photo")
-                                        }
-
-                                        Button {
-                                            showingBatchPlaylistMenu = true
-                                        } label: {
-                                            Label("Add \(selectedFileIDs.count) to Playlist", systemImage: "text.badge.plus")
-                                        }
-
-                                        Button(role: .destructive) {
-                                            showingBatchDeleteAlert = true
-                                        } label: {
-                                            Label("Delete \(selectedFileIDs.count)", systemImage: "trash")
-                                        }
-
-                                    } else if !isMultiSelectMode {
-                                        Button {
-                                            artworkTarget = .audioFile(audioFile)
-                                        } label: {
-                                            Label("Set Artwork", systemImage: "photo")
-                                        }
-
-                                        Menu {
-                                            ForEach(audioManager.sortedPlaylists) { playlist in
-                                                Button(playlist.name) {
-                                                    audioManager.addAudioFile(audioFile, to: playlist)
-                                                }
-                                            }
-                                        } label: {
-                                            Label("Add to Playlist", systemImage: "plus")
-                                        }
-
-                                        Button(role: .destructive) {
-                                            audioManager.deleteAudioFile(audioFile)
-                                        } label: {
-                                            Label("Delete", systemImage: "trash")
-                                        }
-                                    }
-                                }
-
-                                Text(audioFile.title)
-                                    .font(.caption)
-                                    .foregroundStyle(theme.textColor)
-                                    .lineLimit(1)
-                            }
-                            .padding(.horizontal, 4)
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-                .padding()
-            }
-            .sheet(isPresented: $showingShareSheet) {
-                ShareSheet(activityItems: shareURLs)
-            }
-            .confirmationDialog("Add to Playlist", isPresented: $showingBatchPlaylistMenu) {
-                ForEach(audioManager.sortedPlaylists) { playlist in
-                    Button(playlist.name) {
-                        for id in selectedFileIDs {
-                            if let file = audioManager.audioFiles.first(where: { $0.id == id }) {
-                                audioManager.addAudioFile(file, to: playlist)
-                            }
-                        }
-                    }
-                }
-                Button("Cancel", role: .cancel) {}
-            }
-            .alert("Delete Selected Files", isPresented: $showingBatchDeleteAlert) {
-                Button("Cancel", role: .cancel) {}
-                Button("Delete", role: .destructive) {
-                    for id in selectedFileIDs {
-                        if let file = audioManager.audioFiles.first(where: { $0.id == id }) {
-                            audioManager.deleteAudioFile(file)
-                        }
-                    }
-                    selectedFileIDs.removeAll()
-                    isMultiSelectMode = false
-                }
-            } message: {
-                Text("Are you sure you want to delete \(selectedFileIDs.count) file(s)? This cannot be undone.")
-            }
-        }
-
-        private func prepareShareURLs() -> [URL] {
-            let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-            try? FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
-
-            var urls: [URL] = []
-            for id in selectedFileIDs {
-                if let file = audioManager.audioFiles.first(where: { $0.id == id }) {
-                    let dest = temp.appendingPathComponent(file.fileURL.lastPathComponent)
-                    try? FileManager.default.copyItem(at: file.fileURL, to: dest)
-                    urls.append(dest)
-                }
-            }
-            return urls
-        }
-    }
-
-
-
-
 
     private var playerPage: some View {
         ZStack {
@@ -586,68 +237,16 @@ struct ContentView: View {
 
             } else {
                 Menu {
-                    Menu("View Style") {
-                        Menu("Songs") {
-                            Button {
-                                useSongSquares = false
-                                UserDefaults.standard.set(false, forKey: "useSongSquares")
-                            } label: { Label("List", systemImage: useSongSquares ? "circle" : "checkmark") }
-
-                            Button {
-                                useSongSquares = true
-                                UserDefaults.standard.set(true, forKey: "useSongSquares")
-                            } label: { Label("Squares", systemImage: useSongSquares ? "checkmark" : "circle") }
-
-                            Picker("Grid Size", selection: Binding(
-                                get: { songGridColumns },
-                                set: { v in
-                                    songGridColumns = v
-                                    UserDefaults.standard.set(v, forKey: "songGridColumns")
-                                }
-                            )) {
-                                ForEach(1..<11) { i in
-                                    Text("\(i)").tag(i)
-                                }
-                            }
-                        }
-
-                        Menu("Playlists") {
-                            Button {
-                                usePlaylistSquares = false
-                                UserDefaults.standard.set(false, forKey: "usePlaylistSquares")
-                            } label: { Label("List", systemImage: usePlaylistSquares ? "circle" : "checkmark") }
-
-                            Button {
-                                usePlaylistSquares = true
-                                UserDefaults.standard.set(true, forKey: "usePlaylistSquares")
-                            } label: { Label("Squares", systemImage: usePlaylistSquares ? "checkmark" : "circle") }
-
-                            Picker("Grid Size", selection: Binding(
-                                get: { playlistGridColumns },
-                                set: { v in
-                                    playlistGridColumns = v
-                                    UserDefaults.standard.set(v, forKey: "playlistGridColumns")
-                                }
-                            )) {
-                                ForEach(1..<11) { i in
-                                    Text("\(i)").tag(i)
-                                }
-                            }
-                        }
-                    }
-
                     Button {
                         showingFilePicker = true
                     } label: {
                         Label("Add Songs", systemImage: "music.note")
                     }
-
                     Button {
                         showingCreatePlaylistAlert = true
                     } label: {
                         Label("Add playlist", systemImage: "music.note.list")
                     }
-
                     Button {
                         showingSettings = true
                     } label: {
@@ -661,7 +260,6 @@ struct ContentView: View {
             }
         }
     }
-
 
 
 
@@ -1427,13 +1025,11 @@ struct AudioFileButton: View {
                     selectedAudioFile = audioFile
                     navigateToPlayer = true
                 } else {
-                    Task {
-                        await audioManager.playAsync(
-                            audioFile,
-                            context: context,
-                            fromSongsTab: isFromSongsTab
-                        )
-                    }
+                    audioManager.play(
+                        audioFile: audioFile,
+                        context: context,
+                        fromSongsTab: isFromSongsTab
+                    )
                 }
             }
         } label: {
@@ -1477,7 +1073,6 @@ struct AudioFileButton: View {
         }
     }
 }
-
 
 struct MultiSelectContextMenu: View {
     @ObservedObject var audioManager: AudioManager
