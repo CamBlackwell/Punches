@@ -60,19 +60,28 @@ class UnifiedAudioAnalyser: ObservableObject {
     }
     
     func attach(to audioEngine: AVAudioEngine) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            self.attachTapAfterEngineStabilizes(audioEngine)
+        }
+    }
+
+    private func attachTapAfterEngineStabilizes(_ audioEngine: AVAudioEngine) {
         self.node = MixerNodeWrapper(audioEngine.mainMixerNode)
-        
+
         let mixer = audioEngine.mainMixerNode
         let format = mixer.outputFormat(forBus: 0)
-        
-        // Remove any existing tap first
+
         mixer.removeTap(onBus: 0)
-        
-        // Install the tap to capture audio data
-        mixer.installTap(onBus: 0, bufferSize: AVAudioFrameCount(bufferSize), format: format) { [weak self] buffer, time in
+
+        mixer.installTap(
+            onBus: 0,
+            bufferSize: AVAudioFrameCount(bufferSize),
+            format: format
+        ) { [weak self] buffer, time in
             self?.processBuffer(buffer)
         }
     }
+
     
     func detach(from audioEngine: AVAudioEngine) {
         audioEngine.mainMixerNode.removeTap(onBus: 0)

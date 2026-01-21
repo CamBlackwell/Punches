@@ -105,7 +105,7 @@ struct AudioPlayerView: View {
 
         case .albumArt:
             if let name = currentFile.artworkImageName,
-               let artwork = audioManager.loadArtworkImage(name) {
+               let artwork = audioManager.artworkService.loadArtworkImage(name) {
                 Image(uiImage: artwork)
                     .resizable()
                     .aspectRatio(contentMode: .fit)

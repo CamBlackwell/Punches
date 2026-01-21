@@ -29,6 +29,7 @@ struct ContentView: View {
 
     
     
+    
     var body: some View {
         NavigationStack {
             ZStack(alignment: .bottom) {
@@ -100,6 +101,45 @@ struct ContentView: View {
             }
         }
         .tint(theme.tint)
+        .task {
+            preloadViews()
+        }
+    }
+
+    
+    @MainActor
+    private func preloadViews() {
+        _ = UIImage(systemName: "music.note")
+        _ = UIImage(systemName: "music.note.list")
+        _ = UIImage(systemName: "ellipsis.circle")
+        _ = UIImage(systemName: "photo")
+        _ = UIImage(systemName: "square.and.arrow.up")
+        _ = UIImage(systemName: "trash")
+        _ = UIImage(systemName: "chevron.down")
+        _ = UIImage(systemName: "backward.fill")
+        _ = UIImage(systemName: "play.fill")
+        _ = UIImage(systemName: "pause.fill")
+        _ = UIImage(systemName: "forward.fill")
+        _ = UIImage(systemName: "repeat")
+        _ = UIImage(systemName: "repeat.1")
+        _ = UIImage(systemName: "arrow.counterclockwise")
+        _ = UIImage(systemName: "waveform")
+        _ = UIImage(systemName: "square.grid.2x2")
+        _ = UIImage(systemName: "circle.grid.cross")
+        _ = Button("", action: {})
+        _ = VStack { Text("") }
+        _ = HStack { Text("") }
+        _ = AnyTransition.opacity
+        _ = AnyTransition.scale
+        
+        let _ = Menu("x") {
+            Button("a") {}
+            Button("b") {}
+        }
+
+        _ = UIAlertController(title: "", message: "", preferredStyle: .alert)
+
+        let _ = NavigationLink(destination: EmptyView()) { EmptyView() }
     }
 
     private var playlistsPage: some View {

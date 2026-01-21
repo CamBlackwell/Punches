@@ -68,6 +68,7 @@ class AudioManager: NSObject, ObservableObject {
 
         try? FileManager.default.createDirectory(at: artworkDirectory, withIntermediateDirectories: true)
 
+        
         libraryService.loadAudioFiles()
         playlistService.loadPlaylists()
         playlistService.loadOrCreateMasterPlaylist()
@@ -89,6 +90,8 @@ class AudioManager: NSObject, ObservableObject {
         sessionService.setupInterruptionObserver()
         sessionService.setupRouteChangeObserver()
         sessionService.setupLifecycleObservers()
+        
+        
 
         print(FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: SharedConstants.appGroupIdentifier
@@ -228,6 +231,15 @@ class AudioManager: NSObject, ObservableObject {
 
     func reorderSelectedSongs(selectedIDs: [UUID], to destination: Int, in currentSongs: [AudioFile], playlist: Playlist? = nil) {
         playbackService.reorderSelectedSongs(selectedIDs: selectedIDs, to: destination, in: currentSongs, playlist: playlist)
+    }
+    
+    @MainActor
+    func attachAnalyzerSafely() {
+        guard let engine = currentEngine?.getAudioEngine() else { return }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            self.audioAnalyzer.attach(to: engine)
+        }
     }
 }
 
