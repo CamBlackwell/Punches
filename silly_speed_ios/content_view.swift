@@ -26,6 +26,8 @@ struct ContentView: View {
     @State private var showingBatchPlaylistMenu = false
     @State private var showingBatchDeleteAlert = false
     @State private var showingSettings = false
+    @State private var searchText: String = ""
+    @FocusState private var isSearchFocused: Bool
 
     
     
@@ -67,9 +69,13 @@ struct ContentView: View {
                 }
             }
             .toolbar { toolbarContent }
+            .toolbarRole(.editor)
+            .navigationBarTitleDisplayMode(.inline) 
             .navigationDestination(isPresented: $showingSettings) {
                 SettingsView()
             }
+
+
             .applySheets(
                 showingFilePicker: $showingFilePicker,
                 showingSettings: $showingSettings,
@@ -188,7 +194,8 @@ struct ContentView: View {
                     newPlaylistNameRename: $newPlaylistNameRename,
                     artworkTarget: $artworkTarget,
                     showingCreatePlaylistAlert: $showingCreatePlaylistAlert,
-                    newPlaylistName: $newPlaylistName
+                    newPlaylistName: $newPlaylistName,
+                    playlists: filteredPlaylists
                 )
             }
         }
@@ -210,7 +217,8 @@ struct ContentView: View {
                     artworkTarget: $artworkTarget,
                     isMultiSelectMode: $isMultiSelectMode,
                     selectedFileIDs: $selectedFileIDs,
-                    showingFilePicker: $showingFilePicker
+                    showingFilePicker: $showingFilePicker,
+                    songs: filteredSongs
                 )
             }
         }
@@ -228,6 +236,19 @@ struct ContentView: View {
             }
         }
     }
+    
+    var filteredSongs: [AudioFile] {
+        let base = audioManager.displayedSongs
+        if searchText.isEmpty { return base }
+        return base.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    var filteredPlaylists: [Playlist] {
+        let base = audioManager.sortedPlaylists
+        if searchText.isEmpty { return base }
+        return base.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+
 
     
     @ToolbarContentBuilder
@@ -235,12 +256,46 @@ struct ContentView: View {
         ToolbarItem(placement: .navigationBarLeading) {
             leadingToolbarButton
         }
+        
+        ToolbarItem(placement: .principal) {
+            if !(libraryFilter == .player) {
+                searchBar
+            }
+        }
+
 
         ToolbarItem(placement: .navigationBarTrailing) {
             trailingToolbarButton
         }
     }
     
+        private var searchBar: some View {
+            HStack {
+                HStack {
+                    if !isSearchFocused {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(theme.accentColor)
+                    }
+                    
+                    TextField("", text: $searchText)
+                        .focused($isSearchFocused)
+                    
+                    if !searchText.isEmpty {
+                        Button { searchText = "" } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(theme.secondaryTextColor)
+                        }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            }
+            .glassEffect()
+            .frame(width: 260, height: 36)
+            .contentShape(Rectangle())
+            .onTapGesture { isSearchFocused = true }
+        }
+
     private var leadingToolbarButton: some View {
         Group {
             if libraryFilter == .player {
@@ -271,7 +326,7 @@ struct ContentView: View {
                             selectedFileIDs = Set(audioManager.displayedSongs.map { $0.id })
                         }
                     } label: {
-                        Text("Select All")
+                        Text("All")
                     }
                     .tint(theme.accentColor)
                 }
@@ -311,7 +366,7 @@ struct ContentView: View {
                     Button {
                         showingCreatePlaylistAlert = true
                     } label: {
-                        Label("Add playlist", systemImage: "music.note.list")
+                        Label("Create playlist", systemImage: "music.note.list")
                     }
                     Button {
                         showingSettings = true
@@ -550,67 +605,6 @@ extension View {
     }
 }
 
-struct LibraryListView: View {
-    @ObservedObject var audioManager: AudioManager
-    let filter: LibraryFilter
-    @Binding var navigateToPlayer: Bool
-    @Binding var selectedAudioFile: AudioFile?
-    @Binding var showingRenameAlert: Bool
-    @Binding var renamingAudioFile: AudioFile?
-    @Binding var newFileName: String
-    @Binding var showingRenamePlaylistAlert: Bool
-    @Binding var renamingPlaylist: Playlist?
-    @Binding var newPlaylistNameRename: String
-    @Binding var isReorderMode: Bool
-    @Binding var artworkTarget: ArtworkTarget?
-    @Binding var isMultiSelectMode: Bool
-    @Binding var selectedFileIDs: Set<UUID>
-    @Binding var showingFilePicker: Bool
-    @Binding var showingCreatePlaylistAlert: Bool
-    @Binding var newPlaylistName: String
-
-    var body: some View {
-        switch filter {
-        case .songs:
-            SongsListView(
-                audioManager: audioManager,
-                navigateToPlayer: $navigateToPlayer,
-                selectedAudioFile: $selectedAudioFile,
-                showingRenameAlert: $showingRenameAlert,
-                renamingAudioFile: $renamingAudioFile,
-                newFileName: $newFileName,
-                isReorderMode: $isReorderMode,
-                artworkTarget: $artworkTarget,
-                isMultiSelectMode: $isMultiSelectMode,
-                selectedFileIDs: $selectedFileIDs,
-                showingFilePicker: $showingFilePicker
-            )
-        case .playlists:
-            PlaylistsListView(
-                audioManager: audioManager,
-                navigateToPlayer: $navigateToPlayer,
-                selectedAudioFile: $selectedAudioFile,
-                showingRenameAlert: $showingRenameAlert,
-                renamingAudioFile: $renamingAudioFile,
-                newFileName: $newFileName,
-                showingRenamePlaylistAlert: $showingRenamePlaylistAlert,
-                renamingPlaylist: $renamingPlaylist,
-                newPlaylistNameRename: $newPlaylistNameRename,
-                artworkTarget: $artworkTarget,
-                showingCreatePlaylistAlert: $showingCreatePlaylistAlert,
-                newPlaylistName: $newPlaylistName
-            )
-        case .player:
-            if let audioFile = selectedAudioFile {
-                AudioPlayerView(
-                    audioFile: audioFile,
-                    audioManager: audioManager
-                )
-            }
-        }
-    }
-}
-
 struct SongsListView: View {
     @ObservedObject var audioManager: AudioManager
     @EnvironmentObject var theme: ThemeManager
@@ -629,18 +623,19 @@ struct SongsListView: View {
     @State private var shareURLs: [URL] = []
     @State private var showingBatchPlaylistMenu = false
     @State private var showingBatchDeleteAlert = false
-
-    var sortedSongs: [AudioFile] { audioManager.displayedSongs }
+    let songs: [AudioFile]
+    var sortedSongs: [AudioFile] { songs }
 
     var body: some View {
         List {
+            /*
             AddActionButton(title: "Add Songs") {
                 showingFilePicker = true
             }
             .listRowBackground(theme.backgroundColor)
             .listRowSeparator(.hidden)
             .padding(.bottom, 0)
-            
+            */
             
 
             ForEach(sortedSongs, id: \.id) { audioFile in
@@ -692,7 +687,7 @@ struct SongsListView: View {
         .background(theme.backgroundColor)
         .environment(
             \.editMode,
-            (isReorderMode || isMultiSelectMode)
+             (isReorderMode || isMultiSelectMode)
                 ? .constant(.active) : .constant(.inactive)
         )
         .sheet(
@@ -761,9 +756,11 @@ struct PlaylistsListView: View {
     @Binding var artworkTarget: ArtworkTarget?
     @Binding var showingCreatePlaylistAlert: Bool
     @Binding var newPlaylistName: String
+    let playlists: [Playlist]
 
     var body: some View {
         List {
+            /*
             AddActionButton(title: "Create Playlist") {
                 newPlaylistName = ""
                 showingCreatePlaylistAlert = true
@@ -771,8 +768,9 @@ struct PlaylistsListView: View {
             .listRowBackground(theme.backgroundColor)
             .listRowSeparator(.hidden)
             .padding(.bottom, 0)
+             */
 
-            ForEach(audioManager.sortedPlaylists) { playlist in
+            ForEach(playlists) { playlist in
                 NavigationLink(
                     destination: PlaylistDetailView(
                         playlist: playlist,
