@@ -14,8 +14,8 @@ class SoundTouchAudioEngine: NSObject, AudioEngineProtocol {
     private var scheduledBuffersCount: Int = 0
     private var isFileFinished = false
     private var isUserStopped = false
-    private let buffersAhead = 6
-    private let bufferDuration: TimeInterval = 0.1
+    private let buffersAhead = 4
+    private let bufferDuration: TimeInterval = 0.15
 
     private var soundTouch: STWrapper?
     private var channels: AVAudioChannelCount = 2
@@ -77,63 +77,29 @@ class SoundTouchAudioEngine: NSObject, AudioEngineProtocol {
 
         if bufferFrameCapacity == 0 {
             let frames = AVAudioFrameCount(sampleRate * bufferDuration)
-            bufferFrameCapacity = max(frames, 1024)
+            bufferFrameCapacity = max(frames, 2048)  // Increased minimum
         }
     }
-    
-    private func interleave(_ buffer: AVAudioPCMBuffer, channels: Int) -> [Float] {
-        let frameCount = Int(buffer.frameLength)
-        var interleaved = [Float](repeating: 0, count: frameCount * channels)
-
-        guard let channelData = buffer.floatChannelData else { return interleaved }
-
-        for frame in 0..<frameCount {
-            for ch in 0..<channels {
-                interleaved[frame * channels + ch] = channelData[ch][frame]
-            }
-        }
-
-        return interleaved
-    }
-
-    private func deinterleave(
-        interleaved: [Float],
-        frameCount: Int,
-        channels: Int,
-        format: AVAudioFormat
-    ) -> AVAudioPCMBuffer? {
-
-        guard let outBuffer = AVAudioPCMBuffer(
-            pcmFormat: format,
-            frameCapacity: AVAudioFrameCount(frameCount)
-        ) else {
-            return nil
-        }
-
-        guard let outChannels = outBuffer.floatChannelData else { return nil }
-
-        for ch in 0..<channels {
-            let dst = outChannels[ch]
-            for frame in 0..<frameCount {
-                let srcIndex = frame * channels + ch
-                dst[frame] = interleaved[srcIndex]
-            }
-        }
-
-        outBuffer.frameLength = AVAudioFrameCount(frameCount)
-        return outBuffer
-    }
-
 
     private func scheduleBuffersIfNeeded() {
         guard let file = audioFile, !isFileFinished else { return }
         configureForFileIfNeeded()
 
-        if scheduledBuffersCount >= buffersAhead || currentFramePosition >= file.length {
+        // Schedule multiple buffers at once for smoother playback
+        while scheduledBuffersCount < buffersAhead && currentFramePosition < file.length {
+            scheduleNextBuffer()
+        }
+    }
+
+    private func scheduleNextBuffer() {
+        guard let file = audioFile else { return }
+        
+        let framesRemaining = file.length - currentFramePosition
+        guard framesRemaining > 0 else {
+            isFileFinished = true
             return
         }
-
-        let framesRemaining = file.length - currentFramePosition
+        
         let framesToRead = min(bufferFrameCapacity, AVAudioFrameCount(framesRemaining))
 
         guard let rawBuffer = AVAudioPCMBuffer(
@@ -177,60 +143,50 @@ class SoundTouchAudioEngine: NSObject, AudioEngineProtocol {
             }
         }
 
-
-        let outCapacitySamples = interleavedIn.count * 2
+        // Larger output buffer to handle tempo changes
+        let outCapacitySamples = interleavedIn.count * 4  // Increased from 2
         var interleavedOut = [Float](repeating: 0, count: outCapacitySamples)
 
-        let producedSamples: UInt32 = interleavedIn.withUnsafeBufferPointer { inPtr in
+        let producedSamples: Int = interleavedIn.withUnsafeBufferPointer { inPtr in
             interleavedOut.withUnsafeMutableBufferPointer { outPtr in
                 guard let inBase = inPtr.baseAddress,
                       let outBase = outPtr.baseAddress else { return 0 }
 
-                return st.processSamples(
+                return Int(st.processSamples(
                     inBase,
                     numSamples: UInt32(interleavedIn.count),
                     outBuffer: outBase,
                     outBufferCapacity: UInt32(outCapacitySamples)
-                )
+                ))
             }
         }
 
-        let producedFrames = Int(producedSamples) / inputChannelCount
-        if producedFrames <= 0 {
-            currentFramePosition += AVAudioFramePosition(framesToRead)
-            return
-        }
-
-        guard let outBuffer = AVAudioPCMBuffer(
-            pcmFormat: file.processingFormat,
-            frameCapacity: AVAudioFrameCount(producedFrames)
-        ) else {
-            currentFramePosition += AVAudioFramePosition(framesToRead)
-            return
-        }
-
-        guard let outChannels = outBuffer.floatChannelData else {
-            currentFramePosition += AVAudioFramePosition(framesToRead)
-            return
-        }
-
-        for ch in 0..<inputChannelCount {
-            let dst = outChannels[ch]
-            for frame in 0..<producedFrames {
-                dst[frame] = interleavedOut[frame * inputChannelCount + ch]
-            }
-        }
-
-        outBuffer.frameLength = AVAudioFrameCount(producedFrames)
-
-        // -------------------------------------------
-        // 4. Schedule and advance reading pointer
-        // -------------------------------------------
+        let producedFrames = producedSamples / inputChannelCount
+        
+        // Always advance the read position
         currentFramePosition += AVAudioFramePosition(framesToRead)
-        let atEnd = currentFramePosition >= file.length
-        scheduleBuffer(outBuffer, atEnd: atEnd)
-    }
+        
+        // If we got output, schedule it
+        if producedFrames > 0 {
+            guard let outBuffer = AVAudioPCMBuffer(
+                pcmFormat: file.processingFormat,
+                frameCapacity: AVAudioFrameCount(producedFrames)
+            ) else { return }
 
+            guard let outChannels = outBuffer.floatChannelData else { return }
+
+            for ch in 0..<inputChannelCount {
+                let dst = outChannels[ch]
+                for frame in 0..<producedFrames {
+                    dst[frame] = interleavedOut[frame * inputChannelCount + ch]
+                }
+            }
+
+            outBuffer.frameLength = AVAudioFrameCount(producedFrames)
+            let atEnd = currentFramePosition >= file.length
+            scheduleBuffer(outBuffer, atEnd: atEnd)
+        }
+    }
 
     private func scheduleBuffer(_ buffer: AVAudioPCMBuffer, atEnd: Bool) {
         scheduledBuffersCount += 1
@@ -243,9 +199,11 @@ class SoundTouchAudioEngine: NSObject, AudioEngineProtocol {
             self.audioQueue.async {
                 if self.isUserStopped { return }
                 self.scheduledBuffersCount -= 1
+                
                 if atEnd && self.scheduledBuffersCount == 0 {
                     self.isFileFinished = true
                 } else {
+                    // Schedule more buffers immediately
                     self.scheduleBuffersIfNeeded()
                 }
             }
@@ -286,6 +244,7 @@ class SoundTouchAudioEngine: NSObject, AudioEngineProtocol {
             if !self.playerNode.isPlaying {
                 self.isUserStopped = false
                 if self.scheduledBuffersCount == 0 && !self.isFileFinished {
+                    // Prime the buffer before starting playback
                     self.scheduleBuffersIfNeeded()
                 }
                 self.playerNode.play()
@@ -306,6 +265,7 @@ class SoundTouchAudioEngine: NSObject, AudioEngineProtocol {
             self.bufferFrameCapacity = 0
             self.scheduledBuffersCount = 0
             self.isFileFinished = false
+            self.soundTouch?.clear()
             self.soundTouch = nil
         }
     }
@@ -328,9 +288,11 @@ class SoundTouchAudioEngine: NSObject, AudioEngineProtocol {
             self.currentFramePosition = max(0, min(newFramePosition, file.length))
             self.seekOffset = Double(self.currentFramePosition) / sampleRate
 
+            self.soundTouch?.clear()
             self.soundTouch = nil
             self.configureForFileIfNeeded()
 
+            // Prime buffers before resuming
             self.scheduleBuffersIfNeeded()
 
             if wasPlaying {
@@ -354,16 +316,46 @@ class SoundTouchAudioEngine: NSObject, AudioEngineProtocol {
 
     func setTempo(_ tempo: Float) {
         audioQueue.async {
+            guard self._tempo != tempo else { return }
             self._tempo = tempo
-            self.soundTouch?.setTempo(tempo)
+            self.reprocessAudioFromCurrentPosition()
         }
     }
 
     func setPitch(_ pitch: Float) {
         audioQueue.async {
+            guard self._pitch != pitch else { return }
             self._pitch = pitch
-            let semitones = pitch / 100.0
-            self.soundTouch?.setPitchSemitones(semitones)
+            self.reprocessAudioFromCurrentPosition()
+        }
+    }
+    private func reprocessAudioFromCurrentPosition() {
+        guard let file = self.audioFile else { return }
+        
+        let wasPlaying = self.playerNode.isPlaying
+        
+        let sampleRate = file.processingFormat.sampleRate
+        var capturedTime: TimeInterval = self.seekOffset
+        
+        if let nodeTime = self.playerNode.lastRenderTime,
+           let playerTime = self.playerNode.playerTime(forNodeTime: nodeTime) {
+            capturedTime = self.seekOffset + (Double(playerTime.sampleTime) / playerTime.sampleRate)
+        }
+        
+        self.playerNode.stop()
+        self.scheduledBuffersCount = 0
+        self.isFileFinished = false
+        
+        self.currentFramePosition = AVAudioFramePosition(capturedTime * sampleRate)
+        self.seekOffset = capturedTime
+        
+        self.soundTouch?.setTempo(self._tempo)
+        self.soundTouch?.setPitchSemitones(self._pitch / 100.0)
+        
+        self.scheduleBuffersIfNeeded()
+        
+        if wasPlaying {
+            self.playerNode.play()
         }
     }
 }
