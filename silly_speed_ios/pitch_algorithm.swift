@@ -8,9 +8,9 @@ enum PitchAlgorithm: String, CaseIterable, Codable {
     
     var isImplemented: Bool {
         switch self {
-        case .apple:
+        case .apple, .soundTouch:
             return true
-        case .rubberBand, .soundTouch, .signalSmith:
+        case .rubberBand, .signalSmith:
             return false
         }
     }
