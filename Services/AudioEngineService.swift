@@ -14,8 +14,6 @@ final class AudioEngineService {
             manager.currentEngine = AppleAudioEngine()
         case .rubberBand:
             manager.currentEngine = nil
-        case .soundTouch:
-            manager.currentEngine = nil
         case .signalSmith:
             manager.currentEngine = nil
         }

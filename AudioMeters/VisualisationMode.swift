@@ -5,6 +5,7 @@ enum VisualisationMode: String, Codable, CaseIterable {
     case spectrumOnly
     case goniometerOnly
     case albumArt
+    case q3Spectrum
 
     var icon: String {
         switch self {
@@ -12,6 +13,7 @@ enum VisualisationMode: String, Codable, CaseIterable {
         case .spectrumOnly: return "waveform"
         case .goniometerOnly: return "circle.grid.cross"
         case .albumArt: return "photo"
+        case .q3Spectrum: return "chart.bar.fill"
         }
     }
 }

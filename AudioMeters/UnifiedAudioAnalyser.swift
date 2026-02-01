@@ -15,15 +15,15 @@ class MixerNodeWrapper: Node {
 
 class UnifiedAudioAnalyser: ObservableObject {
     @Published var node: Node?
-    @Published var spectrumBands: [Float] = Array(repeating: 0.0, count: 120)
-    @Published var peakHolds: [Float] = Array(repeating: 0.0, count: 120)
+    @Published var spectrumBands: [Float] = Array(repeating: 0.0, count: 32)
+    @Published var peakHolds: [Float] = Array(repeating: 0.0, count: 32)
     
     @Published var leftSamples: [Float] = []
     @Published var rightSamples: [Float] = []
     @Published var phaseCorrelation: Float = 0.0
     
-    private let bufferSize: Int = 2048
-    private let bandCount = 120
+    private let bufferSize: Int = 8192
+    private let bandCount = 32
     private let maxStereoPoints = 100
     
     private var forwardDFT: vDSP.DiscreteFourierTransform<Float>?
@@ -32,9 +32,15 @@ class UnifiedAudioAnalyser: ObservableObject {
     private var realBuffer: [Float]
     private var imagBuffer: [Float]
     
+    private var sampleRate: Float = 44100.0
+    private var smoothedBands: [Float]
+    private let smoothingFactor: Float = 0.25
+    private let minBinsPerBand = 3
+    
     init() {
         self.realBuffer = [Float](repeating: 0, count: bufferSize)
         self.imagBuffer = [Float](repeating: 0, count: bufferSize)
+        self.smoothedBands = [Float](repeating: 0, count: bandCount)
         setupFFT()
     }
     
@@ -70,6 +76,8 @@ class UnifiedAudioAnalyser: ObservableObject {
 
         let mixer = audioEngine.mainMixerNode
         let format = mixer.outputFormat(forBus: 0)
+        
+        self.sampleRate = Float(format.sampleRate)
 
         mixer.removeTap(onBus: 0)
 
@@ -89,6 +97,7 @@ class UnifiedAudioAnalyser: ObservableObject {
         DispatchQueue.main.async {
             self.spectrumBands = Array(repeating: 0.0, count: self.bandCount)
             self.peakHolds = Array(repeating: 0.0, count: self.bandCount)
+            self.smoothedBands = Array(repeating: 0.0, count: self.bandCount)
             self.leftSamples = []
             self.rightSamples = []
             self.phaseCorrelation = 0.0
@@ -139,6 +148,8 @@ class UnifiedAudioAnalyser: ObservableObject {
         var newBands = [Float]()
         var newPeaks = [Float]()
         
+        let nyquist = sampleRate / 2.0
+        
         for i in 0..<bandCount {
             let fraction = Float(i) / Float(bandCount)
             let minFreq = log10(Float(20.0))
@@ -146,16 +157,56 @@ class UnifiedAudioAnalyser: ObservableObject {
             let logFreq = minFreq + fraction * (maxFreq - minFreq)
             let targetFreq = pow(10, logFreq)
             
-            let binIndex = Int((targetFreq / 44100.0) * Float(bufferSize))
-            let clampedIndex = min(max(binIndex, 0), (bufferSize / 2) - 1)
+            let nextFraction = Float(i + 1) / Float(bandCount)
+            let nextLogFreq = minFreq + nextFraction * (maxFreq - minFreq)
+            let nextTargetFreq = pow(10, nextLogFreq)
             
-            let mag = magnitudes[clampedIndex]
-            let db = 20 * log10(mag + 0.00001)
+            var startBin = Int((targetFreq / nyquist) * Float(bufferSize / 2))
+            var endBin = Int((nextTargetFreq / nyquist) * Float(bufferSize / 2))
+            
+            let binsInRange = endBin - startBin
+            if binsInRange < minBinsPerBand {
+                let centerBin = (startBin + endBin) / 2
+                startBin = max(0, centerBin - minBinsPerBand / 2)
+                endBin = min(bufferSize / 2, startBin + minBinsPerBand)
+            }
+            
+            let clampedStart = min(max(startBin, 0), (bufferSize / 2) - 1)
+            let clampedEnd = min(max(endBin, clampedStart + 1), bufferSize / 2)
+            
+            var sumSquared: Float = 0
+            var count: Float = 0
+            
+            for binIndex in clampedStart..<clampedEnd {
+                let mag = magnitudes[binIndex]
+                sumSquared += mag * mag
+                count += 1
+            }
+            
+            let rms = count > 0 ? sqrt(sumSquared / count) : 0
+            
+            let bassBoost: Float
+            if targetFreq < 200 {
+                bassBoost = 1.5
+            } else if targetFreq < 500 {
+                bassBoost = 1.3
+            } else if targetFreq < 2000 {
+                bassBoost = 1.1
+            } else {
+                bassBoost = 1.0 + (targetFreq / 10000.0) * 0.3
+            }
+            
+            let weightedRMS = rms * bassBoost
+            
+            let db = 20 * log10(weightedRMS + 0.00001)
             let normalized = max(0, min(1, (db + 60) / 60))
             
-            newBands.append(normalized)
+            let smoothed = smoothedBands[i] * (1 - smoothingFactor) + normalized * smoothingFactor
+            smoothedBands[i] = smoothed
+            
+            newBands.append(smoothed)
             let previousPeak = peakHolds.indices.contains(i) ? peakHolds[i] : 0
-            newPeaks.append(max(normalized, previousPeak - 0.015))
+            newPeaks.append(max(smoothed, previousPeak - 0.01))
         }
         
         DispatchQueue.main.async {

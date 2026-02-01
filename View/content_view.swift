@@ -70,7 +70,7 @@ struct ContentView: View {
             }
             .toolbar { toolbarContent }
             .toolbarRole(.editor)
-            .navigationBarTitleDisplayMode(.inline) 
+            .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(isPresented: $showingSettings) {
                 SettingsView()
             }

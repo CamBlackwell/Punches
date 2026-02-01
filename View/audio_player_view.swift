@@ -99,6 +99,11 @@ struct AudioPlayerView: View {
             GoniometerView(analyzer: audioManager.audioAnalyzer)
                 .frame(maxHeight: .infinity)
                 .transition(.scale.combined(with: .opacity))
+        
+        case .q3Spectrum:
+            Q3AnalyzerView(analyzer: audioManager.audioAnalyzer)
+                .frame(maxHeight: .infinity)
+                .transition(.scale.combined(with: .opacity))
 
         case .albumArt:
             if let name = currentFile.artworkImageName,

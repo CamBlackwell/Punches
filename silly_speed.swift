@@ -27,7 +27,14 @@ struct SillySpeed: App {
                         }
                     }
                 }
+                .onAppear {
+                    preloadHaptics()
+                }
         }
+    }
+    private func preloadHaptics() {
+        let generator = UIImpactFeedbackGenerator(style: .light)
+        generator.prepare()
     }
 }
 
