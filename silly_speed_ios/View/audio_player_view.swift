@@ -16,11 +16,6 @@ struct AudioPlayerView: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 8) {
-                HStack {
-                    algorithmSelector
-                    visualisationSelector
-                }
-
                 visualisationView
 
                 Spacer()
@@ -32,9 +27,14 @@ struct AudioPlayerView: View {
             }
             .padding()
         }
-        .navigationTitle(currentFile.title)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationTitle(currentFile.title)
         .preferredColorScheme(.dark)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                visualisationSelector
+            }
+        }
         .onChange(of: audioManager.currentlyPlayingID) { _, newID in
             if let newID = newID, newID != currentFile.id {
                 sliderValue = 0
@@ -42,7 +42,7 @@ struct AudioPlayerView: View {
         }
     }
 
-    private var currentFile: AudioFile {
+     var currentFile: AudioFile {
         audioManager.audioFiles.first(where: {
             $0.id == audioManager.currentlyPlayingID
         }) ?? audioFile
@@ -70,9 +70,6 @@ struct AudioPlayerView: View {
             HStack {
                 Image(systemName: audioManager.visualisationMode.icon)
                     .font(.subheadline)
-                    .tint(theme.textColor)
-                Image(systemName: "chevron.down")
-                    .font(.caption)
                     .tint(theme.textColor)
             }
             .padding()
