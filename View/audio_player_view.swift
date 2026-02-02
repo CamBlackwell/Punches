@@ -102,7 +102,7 @@ struct AudioPlayerView: View {
         
         case .q3Spectrum:
             Q3AnalyzerView(analyzer: audioManager.audioAnalyzer)
-                .frame(maxHeight: .infinity)
+                .frame(maxWidth: CGFloat.infinity)
                 .transition(.scale.combined(with: .opacity))
 
         case .albumArt:
