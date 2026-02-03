@@ -24,6 +24,10 @@ class Q3MetalRenderer: NSObject, MTKViewDelegate {
     var showGainReduction: Bool = true
     var autoScale: Bool = true
     
+    // Horizontal positioning
+    var leftMargin: Float = 30      // Distance from left edge
+    var rightMargin: Float = 10     // Distance from right edge
+    
     // Dynamic auto-scaling
     private var currentMinDB: Float = -60
     private var currentMaxDB: Float = 6
@@ -253,7 +257,8 @@ class Q3MetalRenderer: NSObject, MTKViewDelegate {
         encoder.setRenderPipelineState(gridPipelineState)
         
         let usableHeight = viewportSize.y - 30
-        let usableWidth = viewportSize.x - 60
+        let usableWidth = viewportSize.x - leftMargin - rightMargin
+        let xOffset: Float = leftMargin  // Use configurable left margin
         
         // Draw horizontal dB lines
         let dbStep: Float = 6.0
@@ -296,7 +301,7 @@ class Q3MetalRenderer: NSObject, MTKViewDelegate {
         let frequencies: [Float] = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
         
         for freq in frequencies {
-            let x = frequencyToX(freq, width: usableWidth)
+            let x = frequencyToX(freq, width: usableWidth) + xOffset
             let normalizedX = (x / viewportSize.x) * 2.0 - 1.0
             
             let opacity: Float
@@ -318,6 +323,7 @@ class Q3MetalRenderer: NSObject, MTKViewDelegate {
     }
     
     private func frequencyToX(_ frequency: Float, width: Float) -> Float {
+        // Logarithmic frequency mapping: 20Hz to 20kHz
         let minFreq = log10(20.0)
         let maxFreq = log10(20000.0)
         let logFreq = log10(Double(frequency))
@@ -330,12 +336,24 @@ class Q3MetalRenderer: NSObject, MTKViewDelegate {
         guard bands.count > 1 else { return }
         
         let usableHeight = viewportSize.y - 30
-        let usableWidth = viewportSize.x - 60
+        let usableWidth = viewportSize.x - leftMargin - rightMargin
+        let xOffset: Float = leftMargin  // Use configurable left margin
         
-        // Calculate positions for each band
+        // Calculate positions for each band using EXACT SAME mapping as frequency grid
         var bandPositions: [(x: Float, y: Float, db: Float, gr: Float)] = []
+        
+        let minFreqLog = log10(20.0)
+        let maxFreqLog = log10(20000.0)
+        let logRange = Float(maxFreqLog - minFreqLog)
+        
         for i in 0..<bands.count {
-            let x = (Float(i) / Float(bands.count - 1)) * usableWidth
+            // Use same logarithmic scale as grid and FFT processing
+            let fraction = Float(i) / Float(bands.count - 1)
+            let logFreq = minFreqLog + Double(fraction * logRange)
+            let freq = pow(10.0, logFreq)
+            
+            // Map to X coordinate using same function as grid, then add offset
+            let x = frequencyToX(Float(freq), width: usableWidth) + xOffset
             let db = magnitudeToCalibratedDB(bands[i])
             let y = dbToY(db, height: usableHeight) + yOffset
             let gr = i < gainReduction.count ? gainReduction[i] : 0.0
@@ -349,9 +367,9 @@ class Q3MetalRenderer: NSObject, MTKViewDelegate {
         // Draw filled area
         drawFilledArea(encoder: encoder, viewportSize: viewportSize, bandPositions: bandPositions, color: color, yOffset: yOffset)
         
-        // Generate interpolated curve vertices
+        // Generate interpolated curve vertices with higher detail
         var vertices: [Vertex] = []
-        let curveDetail = 10
+        let curveDetail = 10 // Points to interpolate between each band
         
         for i in 0..<(bandPositions.count - 1) {
             let p0 = i > 0 ? bandPositions[i - 1] : bandPositions[i]
@@ -373,10 +391,20 @@ class Q3MetalRenderer: NSObject, MTKViewDelegate {
             }
         }
         
+        // Add the last point
+        if let last = bandPositions.last {
+            let normalizedX = (last.x / viewportSize.x) * 2.0 - 1.0
+            let normalizedY = -(last.y / viewportSize.y) * 2.0 + 1.0
+            vertices.append(Vertex(
+                position: vector_float2(normalizedX, normalizedY),
+                color: vector_float4(color.r, color.g, color.b, 1.0)
+            ))
+        }
+        
         if !vertices.isEmpty {
             encoder.setRenderPipelineState(pipelineState)
             
-            // Multi-pass glow effect
+            // Multi-pass glow effect for visual appeal
             drawCurveLine(encoder: encoder, vertices: vertices, alpha: 0.3)
             drawCurveLine(encoder: encoder, vertices: vertices, alpha: 0.5)
             drawCurveLine(encoder: encoder, vertices: vertices, alpha: 1.0)
@@ -446,12 +474,22 @@ class Q3MetalRenderer: NSObject, MTKViewDelegate {
         encoder.setRenderPipelineState(pipelineState)
         
         let usableHeight = viewportSize.y - 30
-        let usableWidth = viewportSize.x - 60
+        let usableWidth = viewportSize.x - leftMargin - rightMargin
+        let xOffset: Float = leftMargin  // Use configurable left margin
         
         var vertices: [Vertex] = []
         
+        let minFreqLog = log10(20.0)
+        let maxFreqLog = log10(20000.0)
+        let logRange = Float(maxFreqLog - minFreqLog)
+        
         for i in 0..<peaks.count {
-            let x = (Float(i) / Float(peaks.count - 1)) * usableWidth
+            // Use same frequency mapping
+            let fraction = Float(i) / Float(peaks.count - 1)
+            let logFreq = minFreqLog + Double(fraction * logRange)
+            let freq = pow(10.0, logFreq)
+            let x = frequencyToX(Float(freq), width: usableWidth) + xOffset
+            
             let db = magnitudeToCalibratedDB(peaks[i])
             let y = dbToY(db, height: usableHeight) + yOffset
             
@@ -673,7 +711,7 @@ struct Q3AnalyzerView: View {
                     
                     HStack(spacing: 0) {
                         Spacer()
-                            .frame(width: 30)
+                            .frame(width: 30)  // Should match leftMargin
                         
                         ZStack(alignment: .top) {
                             ForEach(getFrequencyPositions(width: geometry.size.width - 60), id: \.freq) { position in
