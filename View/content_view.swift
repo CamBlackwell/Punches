@@ -28,6 +28,8 @@ struct ContentView: View {
     @State private var showingSettings = false
     @State private var searchText: String = ""
     @FocusState private var isSearchFocused: Bool
+    @State private var isScrolledDown = false
+    @Namespace private var barNamespace
 
     
     
@@ -38,34 +40,20 @@ struct ContentView: View {
                 theme.backgroundColor
                     .ignoresSafeArea()
 
-                VStack(spacing: 0) {
-                    TabView(selection: $libraryFilter) {
-                        playlistsPage
-                            .tag(LibraryFilter.playlists)
+                TabView(selection: $libraryFilter) {
+                    playlistsPage
+                        .tag(LibraryFilter.playlists)
 
-                        songsPage
-                            .tag(LibraryFilter.songs)
+                    songsPage
+                        .tag(LibraryFilter.songs)
 
-                        playerPage
-                            .tag(LibraryFilter.player)
-                    }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    playerPage
+                        .tag(LibraryFilter.player)
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
 
-                    if audioManager.currentlyPlayingID != nil
-                        && !isMultiSelectMode
-                        && libraryFilter != .player {
-                        Divider()
-                        MiniPlayerBar(
-                            audioManager: audioManager,
-                            navigateToPlayer: $navigateToPlayer,
-                            selectedAudioFile: $selectedAudioFile
-                        )
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
-
-                    if libraryFilter != .player {
-                        bottomTabBar
-                    }
+                if libraryFilter != .player {
+                    adaptiveBottomBar
                 }
             }
             .toolbar { toolbarContent }
@@ -195,6 +183,7 @@ struct ContentView: View {
                     artworkTarget: $artworkTarget,
                     showingCreatePlaylistAlert: $showingCreatePlaylistAlert,
                     newPlaylistName: $newPlaylistName,
+                    isScrolledDown: $isScrolledDown,
                     playlists: filteredPlaylists
                 )
             }
@@ -218,6 +207,7 @@ struct ContentView: View {
                     isMultiSelectMode: $isMultiSelectMode,
                     selectedFileIDs: $selectedFileIDs,
                     showingFilePicker: $showingFilePicker,
+                    isScrolledDown: $isScrolledDown,
                     songs: filteredSongs
                 )
             }
@@ -384,25 +374,126 @@ struct ContentView: View {
 
 
 
-    private var bottomTabBar: some View {
+    // MARK: - Adaptive Bottom Bar
+
+    private var adaptiveBottomBar: some View {
+        let isPlaying = audioManager.currentlyPlayingID != nil && !isMultiSelectMode
+        let spring = Animation.spring(response: 0.5, dampingFraction: 0.62, blendDuration: 0.15)
+
+        return Group {
+            if isScrolledDown && isPlaying {
+                // Scrolled + playing: circle left, player pill right
+                HStack(spacing: 8) {
+                    tabCircleButton
+                        .matchedGeometryEffect(id: "tabBar", in: barNamespace)
+                    compactPlayerPill
+                        .matchedGeometryEffect(id: "playerPill", in: barNamespace)
+                }
+            } else if !isScrolledDown && isPlaying {
+                // Not scrolled + playing: player pill above full tab bar
+                VStack(spacing: 8) {
+                    expandedPlayerPill
+                        .matchedGeometryEffect(id: "playerPill", in: barNamespace)
+                    fullTabBar(compact: false)
+                        .matchedGeometryEffect(id: "tabBar", in: barNamespace)
+                }
+            } else {
+                // No song: just the tab bar in full or compact form
+                fullTabBar(compact: isScrolledDown)
+                    .matchedGeometryEffect(id: "tabBar", in: barNamespace)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 12)
+        .animation(spring, value: isScrolledDown)
+        .animation(spring, value: isPlaying)
+    }
+
+    // Full-width player pill shown above tab bar when not scrolled
+    private var expandedPlayerPill: some View {
+        HStack(spacing: 0) {
+            Button {
+                withAnimation {
+                    if let currentFile = audioManager.audioFiles.first(where: {
+                        $0.id == audioManager.currentlyPlayingID
+                    }) { selectedAudioFile = currentFile }
+                    libraryFilter = .player
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    playerArtwork(size: 32, cornerRadius: 7)
+                    playerTitle(fontSize: 14)
+                }
+                .padding(.leading, 14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            playerControls(iconSize: 15, playSize: 19, buttonWidth: 40, height: 52)
+                .padding(.trailing, 4)
+        }
+        .frame(height: 52)
+        .glassEffect(.regular.interactive(), in: .capsule)
+    }
+
+    // Compact player pill beside the circle when scrolled
+    private var compactPlayerPill: some View {
+        HStack(spacing: 0) {
+            Button {
+                withAnimation {
+                    if let currentFile = audioManager.audioFiles.first(where: {
+                        $0.id == audioManager.currentlyPlayingID
+                    }) { selectedAudioFile = currentFile }
+                    libraryFilter = .player
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    playerArtwork(size: 28, cornerRadius: 6)
+                    playerTitle(fontSize: 13)
+                }
+                .padding(.leading, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            playerControls(iconSize: 14, playSize: 17, buttonWidth: 36, height: 48)
+                .padding(.trailing, 4)
+        }
+        .frame(height: 48)
+        .frame(maxWidth: .infinity)
+        .glassEffect(.regular.interactive(), in: .capsule)
+    }
+
+    // Standalone glass circle — shows current tab icon, tap collapses scroll
+    private var tabCircleButton: some View {
+        Button {
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.62, blendDuration: 0.15)) {
+                isScrolledDown = false
+            }
+        } label: {
+            Image(systemName: currentTabIcon)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(theme.accentColor)
+                .frame(width: 48, height: 48)
+                .contentShape(Circle())
+        }
+        .glassEffect(.regular.interactive(), in: .circle)
+    }
+
+    // Full-width pill tab bar
+    private func fullTabBar(compact: Bool) -> some View {
         HStack(spacing: 0) {
             BottomTabButton(
                 icon: "music.note.list",
-                title: "Playlists",
+                title: compact ? "" : "Playlists",
                 isSelected: libraryFilter == .playlists,
                 action: { libraryFilter = .playlists }
             )
-
             BottomTabButton(
                 icon: "music.note",
-                title: "Songs",
+                title: compact ? "" : "Songs",
                 isSelected: libraryFilter == .songs,
                 action: { libraryFilter = .songs }
             )
-
             BottomTabButton(
                 icon: "play.circle.fill",
-                title: "Player",
+                title: compact ? "" : "Player",
                 isSelected: libraryFilter == .player,
                 isDisabled: audioManager.audioFiles.isEmpty,
                 action: {
@@ -417,9 +508,82 @@ struct ContentView: View {
                 }
             )
         }
-        .frame(height: 45)
-        .background(.ultraThinMaterial)
-        .ignoresSafeArea(edges: .bottom)
+        .frame(height: compact ? 48 : 54)
+        .glassEffect(.regular.interactive(), in: .capsule)
+    }
+
+    // Shared artwork subview
+    @ViewBuilder
+    private func playerArtwork(size: CGFloat, cornerRadius: CGFloat) -> some View {
+        if let playingID = audioManager.currentlyPlayingID,
+           let file = audioManager.audioFiles.first(where: { $0.id == playingID }),
+           let artworkName = file.artworkImageName,
+           let image = audioManager.artworkService.loadArtworkImage(artworkName) {
+            Image(uiImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+        } else {
+            Image(systemName: "face.smiling")
+                .font(.system(size: size * 0.6))
+                .foregroundStyle(theme.secondaryTextColor)
+                .frame(width: size, height: size)
+        }
+    }
+
+    // Shared title subview
+    @ViewBuilder
+    private func playerTitle(fontSize: CGFloat) -> some View {
+        if let playingID = audioManager.currentlyPlayingID,
+           let file = audioManager.audioFiles.first(where: { $0.id == playingID }) {
+            Text(file.title)
+                .font(.system(size: fontSize, weight: .medium))
+                .foregroundStyle(theme.textColor)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+    }
+
+    // Shared playback controls subview
+    private func playerControls(
+        iconSize: CGFloat,
+        playSize: CGFloat,
+        buttonWidth: CGFloat,
+        height: CGFloat
+    ) -> some View {
+        HStack(spacing: 0) {
+            Button { audioManager.skipPreviousSong() } label: {
+                Image(systemName: "backward.fill")
+                    .font(.system(size: iconSize, weight: .semibold))
+                    .foregroundStyle(theme.textColor)
+                    .frame(width: buttonWidth, height: height)
+                    .contentShape(Rectangle())
+            }
+            Button { audioManager.togglePlayPause() } label: {
+                Image(systemName: audioManager.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: playSize, weight: .semibold))
+                    .foregroundStyle(theme.accentColor)
+                    .frame(width: buttonWidth, height: height)
+                    .contentShape(Rectangle())
+            }
+            Button { audioManager.skipNextSong() } label: {
+                Image(systemName: "forward.fill")
+                    .font(.system(size: iconSize, weight: .semibold))
+                    .foregroundStyle(theme.textColor)
+                    .frame(width: buttonWidth, height: height)
+                    .contentShape(Rectangle())
+            }
+        }
+    }
+
+    // Current tab's SF Symbol
+    private var currentTabIcon: String {
+        switch libraryFilter {
+        case .playlists: return "music.note.list"
+        case .songs:     return "music.note"
+        case .player:    return "play.circle.fill"
+        }
     }
 }
 
@@ -435,18 +599,19 @@ struct BottomTabButton: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 2) {
+            VStack(spacing: title.isEmpty ? 0 : 2) {
                 Image(systemName: icon)
-                    .font(.title3)
-                Text(title)
-                    .font(.system(size: 10))
+                    .font(title.isEmpty ? .system(size: 20, weight: .medium) : .title3)
+                if !title.isEmpty {
+                    Text(title)
+                        .font(.system(size: 10))
+                }
             }
             .foregroundStyle(
                 isSelected ? theme.accentColor : theme.secondaryTextColor
             )
             .frame(maxWidth: .infinity)
-            .padding(.top, 10)
-            .padding(.bottom, 0)
+            .padding(.vertical, title.isEmpty ? 12 : 10)
         }
         .disabled(isDisabled)
     }
@@ -618,6 +783,7 @@ struct SongsListView: View {
     @Binding var isMultiSelectMode: Bool
     @Binding var selectedFileIDs: Set<UUID>
     @Binding var showingFilePicker: Bool
+    @Binding var isScrolledDown: Bool
     @Environment(\.editMode) private var editMode
     @State private var showingShareSheet = false
     @State private var shareURLs: [URL] = []
@@ -680,11 +846,18 @@ struct SongsListView: View {
                 }
             }
 
-            //Color.clear.frame(height: 35).listRowBackground(Color.clear).listRowSeparator(.hidden)
+            Color.clear.frame(height: 35).listRowBackground(Color.clear).listRowSeparator(.hidden)
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(theme.backgroundColor)
+        .onScrollGeometryChange(for: CGFloat.self) { geo in
+            geo.contentOffset.y
+        } action: { _, newOffset in
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.62, blendDuration: 0.15)) {
+                isScrolledDown = newOffset > 60
+            }
+        }
         .environment(
             \.editMode,
              (isReorderMode || isMultiSelectMode)
@@ -756,6 +929,7 @@ struct PlaylistsListView: View {
     @Binding var artworkTarget: ArtworkTarget?
     @Binding var showingCreatePlaylistAlert: Bool
     @Binding var newPlaylistName: String
+    @Binding var isScrolledDown: Bool
     let playlists: [Playlist]
 
     var body: some View {
@@ -819,11 +993,18 @@ struct PlaylistsListView: View {
                     }
                 }
             }
-            //Color.clear.frame(height: 35).listRowBackground(Color.clear).listRowSeparator(.hidden)
+            Color.clear.frame(height: 35).listRowBackground(Color.clear).listRowSeparator(.hidden)
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(theme.backgroundColor)
+        .onScrollGeometryChange(for: CGFloat.self) { geo in
+            geo.contentOffset.y
+        } action: { _, newOffset in
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.62, blendDuration: 0.15)) {
+                isScrolledDown = newOffset > 60
+            }
+        }
     }
 }
 
