@@ -427,7 +427,7 @@ struct ContentView: View {
                 .padding(.leading, 14)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            playerControls(iconSize: 15, playSize: 19, buttonWidth: 40, height: 52)
+            playerControls(iconSize: 20, playSize:25, buttonWidth: 45, height: 52)
                 .padding(.trailing, 4)
         }
         .frame(height: 52)
@@ -452,7 +452,7 @@ struct ContentView: View {
                 .padding(.leading, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            playerControls(iconSize: 14, playSize: 17, buttonWidth: 36, height: 48)
+            playerControls(iconSize: 20, playSize: 25, buttonWidth: 45, height: 52)
                 .padding(.trailing, 4)
         }
         .frame(height: 48)
@@ -851,6 +851,17 @@ struct SongsListView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(theme.backgroundColor)
+        .mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .black, location: 0.0),
+                    .init(color: .black, location: 0.90),
+                    .init(color: .clear, location: 1.0)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
         .onScrollGeometryChange(for: CGFloat.self) { geo in
             geo.contentOffset.y
         } action: { _, newOffset in
@@ -998,6 +1009,17 @@ struct PlaylistsListView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(theme.backgroundColor)
+        .mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .black, location: 0.0),
+                    .init(color: .black, location: 0.90),
+                    .init(color: .clear, location: 1.0)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
         .onScrollGeometryChange(for: CGFloat.self) { geo in
             geo.contentOffset.y
         } action: { _, newOffset in
