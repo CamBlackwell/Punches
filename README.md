@@ -1,6 +1,7 @@
 # silly_speed
 
 An iOS audio player built around real-time signal analysis and playback manipulation.
+![ScreenRecording_03-08-2026 17-54-51_1](https://github.com/user-attachments/assets/6b8b990e-4e18-4d0e-8d47-8b107385298e)
 
 ## Features
 
