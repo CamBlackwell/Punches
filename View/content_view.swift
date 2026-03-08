@@ -27,6 +27,7 @@ struct ContentView: View {
     @State private var showingBatchDeleteAlert = false
     @State private var showingSettings = false
     @State private var searchText: String = ""
+    @State var tabCircleButtonPressed = false
     @FocusState private var isSearchFocused: Bool
     @State private var isScrolledDown = false
     @Namespace private var barNamespace
@@ -51,6 +52,9 @@ struct ContentView: View {
                         .tag(LibraryFilter.player)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
+                .onChange(of: libraryFilter) { _, _ in
+                    tabCircleButtonPressed = false
+                }
 
                 if libraryFilter != .player {
                     adaptiveBottomBar
@@ -381,21 +385,19 @@ struct ContentView: View {
         let spring = Animation.spring(response: 0.5, dampingFraction: 0.62, blendDuration: 0.15)
 
         return Group {
-            if isScrolledDown && isPlaying {
-                // Scrolled + playing: circle left, player pill right
-                HStack(spacing: 8) {
-                    tabCircleButton
-                        .matchedGeometryEffect(id: "tabBar", in: barNamespace)
-                    compactPlayerPill
-                        .matchedGeometryEffect(id: "playerPill", in: barNamespace)
-                }
-            } else if !isScrolledDown && isPlaying {
-                // Not scrolled + playing: player pill above full tab bar
+            if tabCircleButtonPressed && !isScrolledDown {
                 VStack(spacing: 8) {
                     expandedPlayerPill
                         .matchedGeometryEffect(id: "playerPill", in: barNamespace)
                     fullTabBar(compact: false)
                         .matchedGeometryEffect(id: "tabBar", in: barNamespace)
+                }
+            } else if isPlaying {
+                HStack(spacing: 8) {
+                    tabCircleButton
+                        .matchedGeometryEffect(id: "tabBar", in: barNamespace)
+                    compactPlayerPill
+                        .matchedGeometryEffect(id: "playerPill", in: barNamespace)
                 }
             } else {
                 // No song: just the tab bar in full or compact form
@@ -407,6 +409,12 @@ struct ContentView: View {
         .padding(.bottom, 12)
         .animation(spring, value: isScrolledDown)
         .animation(spring, value: isPlaying)
+        .animation(spring, value: tabCircleButtonPressed)
+        .onChange(of: isScrolledDown) {_, newValue in
+            if newValue {
+                tabCircleButtonPressed = false
+            }
+        }
     }
 
     // Full-width player pill shown above tab bar when not scrolled
@@ -465,6 +473,7 @@ struct ContentView: View {
         Button {
             withAnimation(.spring(response: 0.5, dampingFraction: 0.62, blendDuration: 0.15)) {
                 isScrolledDown = false
+                tabCircleButtonPressed = true
             }
         } label: {
             Image(systemName: currentTabIcon)
@@ -942,7 +951,7 @@ struct PlaylistsListView: View {
     @Binding var newPlaylistName: String
     @Binding var isScrolledDown: Bool
     let playlists: [Playlist]
-
+    
     var body: some View {
         List {
             /*

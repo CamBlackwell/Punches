@@ -1,865 +1,570 @@
-import SwiftUI
+
+import Accelerate
 import MetalKit
+import SwiftUI
 
-// MARK: - Display Mode Enum
-enum SpectrumDisplayMode: String, CaseIterable {
-    case stereo = "Stereo"
-    case mid = "Mid"
-    case side = "Side"
-    case midSide = "Mid/Side"
+// MARK: - Q3Vertex
+
+/// Swift mirror of the Metal `Vertex` struct (float2 position + float4 color).
+/// Memory layout must stay identical to the Metal declaration.
+private struct Q3Vertex {
+  var position: SIMD2<Float>
+  var color: SIMD4<Float>
+
+  init(_ x: Float, _ y: Float, color: SIMD4<Float>) {
+    position = SIMD2(x, y)
+    self.color = color
+  }
 }
 
-// MARK: - Metal Renderer
-class Q3MetalRenderer: NSObject, MTKViewDelegate {
-    weak var analyzer: UnifiedAudioAnalyser?
-    
-    private var device: MTLDevice!
-    private var commandQueue: MTLCommandQueue!
-    private var pipelineState: MTLRenderPipelineState!
-    private var gridPipelineState: MTLRenderPipelineState!
-    private var fillPipelineState: MTLRenderPipelineState!
-    
-    var displayMode: SpectrumDisplayMode = .stereo
-    var referenceLevel: Float = -12.0
-    var showGainReduction: Bool = true
-    var autoScale: Bool = true
-    
-    // Horizontal positioning
-    var leftMargin: Float = 30      // Distance from left edge
-    var rightMargin: Float = 10     // Distance from right edge
-    
-    // Dynamic auto-scaling
-    private var currentMinDB: Float = -60
-    private var currentMaxDB: Float = 6
-    private let defaultMinDB: Float = -60
-    private let defaultMaxDB: Float = 6
-    private var peakDB: Float = -60
-    private let peakDecayRate: Float = 0.1
-    private let scaleAttackRate: Float = 0.3
-    private let scaleReleaseRate: Float = 0.05
-    
-    init(metalDevice: MTLDevice, analyzer: UnifiedAudioAnalyser) {
-        self.device = metalDevice
-        self.analyzer = analyzer
-        super.init()
-        
-        setupMetal()
-    }
-    
-    private func setupMetal() {
-        commandQueue = device.makeCommandQueue()
-        
-        guard let library = device.makeDefaultLibrary() else {
-            fatalError("Could not load Metal library")
+// MARK: - Q3SpectrumView
+
+/// MiniMeters-style spectrum analyzer backed by a Metal renderer.
+///
+/// Displays a stereo (L+R) magnitude spectrum in dBFS on a logarithmic frequency
+/// axis. Tap or drag to inspect the frequency and level at any point.
+/// An A-weighting toggle is accessible in the top-right corner.
+struct Q3SpectrumView: View {
+
+  @ObservedObject var analyser: UnifiedAudioAnalyser
+
+  /// Normalised [0, 1] horizontal position of the inspect cursor. `nil` when inactive.
+  @State private var inspectFraction: CGFloat?
+
+  init(analyser: UnifiedAudioAnalyser) {
+    self.analyser = analyser
+  }
+
+  public var body: some View {
+    GeometryReader { geo in
+      ZStack(alignment: .topLeading) {
+
+        // MARK: Metal renderer
+        Q3MetalViewRepresentable(
+          analyser: analyser,
+          inspectFraction: inspectFraction
+        )
+
+        // MARK: Axis labels (SwiftUI for crisp text at every resolution)
+        Q3AxisLabels(size: geo.size)
+
+        // MARK: Inspect readout pill
+        if let fraction = inspectFraction {
+          Q3InspectOverlay(
+            fraction: fraction,
+            size: geo.size,
+            analyser: analyser
+          )
         }
-        
-        // Spectrum curve pipeline
-        setupCurvePipeline(library: library)
-        
-        // Grid pipeline
-        setupGridPipeline(library: library)
-        
-        // Fill pipeline
-        setupFillPipeline(library: library)
-    }
-    
-    private func setupCurvePipeline(library: MTLLibrary) {
-        let vertexFunction = library.makeFunction(name: "spectrumVertexShader")
-        let fragmentFunction = library.makeFunction(name: "spectrumFragmentShader")
-        
-        let pipelineDescriptor = MTLRenderPipelineDescriptor()
-        pipelineDescriptor.vertexFunction = vertexFunction
-        pipelineDescriptor.fragmentFunction = fragmentFunction
-        pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-        
-        // Enable alpha blending
-        pipelineDescriptor.colorAttachments[0].isBlendingEnabled = true
-        pipelineDescriptor.colorAttachments[0].rgbBlendOperation = .add
-        pipelineDescriptor.colorAttachments[0].alphaBlendOperation = .add
-        pipelineDescriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-        pipelineDescriptor.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
-        pipelineDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        pipelineDescriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        
-        do {
-            pipelineState = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
-        } catch {
-            fatalError("Could not create pipeline state: \(error)")
-        }
-    }
-    
-    private func setupGridPipeline(library: MTLLibrary) {
-        let vertexFunction = library.makeFunction(name: "gridVertexShader")
-        let fragmentFunction = library.makeFunction(name: "gridFragmentShader")
-        
-        let pipelineDescriptor = MTLRenderPipelineDescriptor()
-        pipelineDescriptor.vertexFunction = vertexFunction
-        pipelineDescriptor.fragmentFunction = fragmentFunction
-        pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-        pipelineDescriptor.colorAttachments[0].isBlendingEnabled = true
-        pipelineDescriptor.colorAttachments[0].rgbBlendOperation = .add
-        pipelineDescriptor.colorAttachments[0].alphaBlendOperation = .add
-        pipelineDescriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-        pipelineDescriptor.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
-        pipelineDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        pipelineDescriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        
-        do {
-            gridPipelineState = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
-        } catch {
-            fatalError("Could not create grid pipeline state: \(error)")
-        }
-    }
-    
-    private func setupFillPipeline(library: MTLLibrary) {
-        let vertexFunction = library.makeFunction(name: "fillVertexShader")
-        let fragmentFunction = library.makeFunction(name: "fillFragmentShader")
-        
-        let pipelineDescriptor = MTLRenderPipelineDescriptor()
-        pipelineDescriptor.vertexFunction = vertexFunction
-        pipelineDescriptor.fragmentFunction = fragmentFunction
-        pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-        pipelineDescriptor.colorAttachments[0].isBlendingEnabled = true
-        pipelineDescriptor.colorAttachments[0].rgbBlendOperation = .add
-        pipelineDescriptor.colorAttachments[0].alphaBlendOperation = .add
-        pipelineDescriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-        pipelineDescriptor.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
-        pipelineDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        pipelineDescriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        
-        do {
-            fillPipelineState = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
-        } catch {
-            fatalError("Could not create fill pipeline state: \(error)")
-        }
-    }
-    
-    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-        // Handle resize if needed
-    }
-    
-    func draw(in view: MTKView) {
-        guard let analyzer = analyzer,
-              let drawable = view.currentDrawable,
-              let renderPassDescriptor = view.currentRenderPassDescriptor,
-              let commandBuffer = commandQueue.makeCommandBuffer(),
-              let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
-            return
-        }
-        
-        // Auto-scale based on current signal level
-        if autoScale {
-            updateAutoScale(analyzer: analyzer)
-        } else {
-            // Manual mode: use fixed range with reference level offset
-            currentMaxDB = 6.0
-            currentMinDB = -60.0
-        }
-        
-        // Clear to black
-        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-        renderPassDescriptor.colorAttachments[0].loadAction = .clear
-        
-        let viewportSize = vector_float2(Float(view.drawableSize.width), Float(view.drawableSize.height))
-        
-        // Draw grid
-        drawGrid(encoder: renderEncoder, viewportSize: viewportSize)
-        
-        // Draw spectrum based on mode
-        switch displayMode {
-        case .stereo:
-            drawSpectrum(encoder: renderEncoder, viewportSize: viewportSize,
-                        bands: analyzer.spectrumBands, peaks: analyzer.peakHolds,
-                        gainReduction: analyzer.gainReduction, yOffset: 0)
-            
-        case .mid:
-            drawSpectrum(encoder: renderEncoder, viewportSize: viewportSize,
-                        bands: analyzer.midSpectrumBands, peaks: analyzer.midPeakHolds,
-                        gainReduction: analyzer.gainReduction, yOffset: 0)
-            
-        case .side:
-            drawSpectrum(encoder: renderEncoder, viewportSize: viewportSize,
-                        bands: analyzer.sideSpectrumBands, peaks: analyzer.sidePeakHolds,
-                        gainReduction: analyzer.gainReduction, yOffset: 0)
-            
-        case .midSide:
-            // Draw Mid on top half
-            drawSpectrum(encoder: renderEncoder, viewportSize: vector_float2(viewportSize.x, viewportSize.y / 2),
-                        bands: analyzer.midSpectrumBands, peaks: analyzer.midPeakHolds,
-                        gainReduction: analyzer.gainReduction, yOffset: 0)
-            
-            // Draw Side on bottom half
-            drawSpectrum(encoder: renderEncoder, viewportSize: vector_float2(viewportSize.x, viewportSize.y / 2),
-                        bands: analyzer.sideSpectrumBands, peaks: analyzer.sidePeakHolds,
-                        gainReduction: analyzer.gainReduction, yOffset: viewportSize.y / 2)
-        }
-        
-        renderEncoder.endEncoding()
-        commandBuffer.present(drawable)
-        commandBuffer.commit()
-    }
-    
-    private func updateAutoScale(analyzer: UnifiedAudioAnalyser) {
-        // Get current max dB from spectrum
-        let bands = displayMode == .mid ? analyzer.midSpectrumBands :
-                   displayMode == .side ? analyzer.sideSpectrumBands :
-                   analyzer.spectrumBands
-        
-        guard !bands.isEmpty else { return }
-        
-        let currentMaxMagnitude = bands.max() ?? 0
-        let currentDB = magnitudeToCalibratedDB(currentMaxMagnitude)
-        
-        // Update peak with decay
-        if currentDB > peakDB {
-            peakDB = currentDB
-        } else {
-            peakDB -= peakDecayRate
-        }
-        
-        // Calculate target range
-        // Always show at least up to 0dB if signal is hot, or give headroom above peak
-        let headroom: Float = 6.0
-        let targetMaxDB: Float
-        
-        if peakDB > -12.0 {
-            // Signal is hot, make sure we show 0dB or slightly above
-            targetMaxDB = max(0.0, peakDB + headroom)
-        } else {
-            // Signal is quiet, just show some headroom above peak
-            targetMaxDB = peakDB + headroom
-        }
-        
-        // Cap at +6dB to leave some overhead
-        let clampedMaxDB = min(targetMaxDB, 6.0)
-        
-        // Always show at least a 48dB range, up to 66dB
-        let minRange: Float = 48.0
-        let maxRange: Float = 66.0
-        let targetRange = min(maxRange, max(minRange, clampedMaxDB - peakDB + 30.0))
-        let targetMinDB = clampedMaxDB - targetRange
-        
-        // Smooth transition with faster attack, slower release
-        if clampedMaxDB > currentMaxDB {
-            currentMaxDB += (clampedMaxDB - currentMaxDB) * scaleAttackRate
-        } else {
-            currentMaxDB += (clampedMaxDB - currentMaxDB) * scaleReleaseRate
-        }
-        
-        if targetMinDB < currentMinDB {
-            currentMinDB += (targetMinDB - currentMinDB) * scaleAttackRate
-        } else {
-            currentMinDB += (targetMinDB - currentMinDB) * scaleReleaseRate
-        }
-    }
-    
-    private func drawGrid(encoder: MTLRenderCommandEncoder, viewportSize: vector_float2) {
-        encoder.setRenderPipelineState(gridPipelineState)
-        
-        let usableHeight = viewportSize.y - 30
-        let usableWidth = viewportSize.x - leftMargin - rightMargin
-        let xOffset: Float = leftMargin  // Use configurable left margin
-        
-        // Draw horizontal dB lines
-        let dbStep: Float = 6.0
-        var db = ceil(currentMinDB / dbStep) * dbStep
-        
-        while db <= currentMaxDB {
-            let y = dbToY(db, height: usableHeight)
-            let normalizedY = (y / viewportSize.y) * 2.0 - 1.0
-            
-            let opacity: Float
-            let color: vector_float4
-            
-            if abs(db) < 0.1 {
-                // 0 dB reference - bright and slightly red-tinted
-                opacity = 0.8
-                color = vector_float4(1.0, 0.3, 0.3, opacity)
-            } else if Int(db) % 12 == 0 {
-                // Major lines (every 12dB)
-                opacity = 0.3
-                color = vector_float4(1, 1, 1, opacity)
-            } else {
-                // Minor lines (every 6dB)
-                opacity = 0.15
-                color = vector_float4(1, 1, 1, opacity)
+
+        // MARK: Enhanced-mode toggle (top-right corner)
+        HStack {
+          Spacer()
+          Button {
+            analyser.q3EnhancedMode.toggle()
+          } label: {
+            HStack(spacing: 3) {
+              Image(
+                systemName: analyser.q3EnhancedMode
+                  ? "waveform.badge.magnifyingglass" : "waveform"
+              )
+              .font(.system(size: 9, weight: .medium))
+              Text(analyser.q3EnhancedMode ? "A-WT" : "FLAT")
+                .font(.system(size: 8, weight: .semibold, design: .monospaced))
             }
-            
-            var vertices: [Vertex] = [
-                Vertex(position: vector_float2(-1.0, normalizedY), color: color),
-                Vertex(position: vector_float2(1.0, normalizedY), color: color)
-            ]
-            
-            let vertexBuffer = device.makeBuffer(bytes: &vertices, length: vertices.count * MemoryLayout<Vertex>.stride, options: [])
-            encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
-            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: 2)
-            
-            db += dbStep
-        }
-        
-        // Draw vertical frequency lines
-        let frequencies: [Float] = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
-        
-        for freq in frequencies {
-            let x = frequencyToX(freq, width: usableWidth) + xOffset
-            let normalizedX = (x / viewportSize.x) * 2.0 - 1.0
-            
-            let opacity: Float
-            if freq == 100 || freq == 1000 || freq == 10000 {
-                opacity = 0.3 // Major frequency lines
-            } else {
-                opacity = 0.15 // Minor frequency lines
-            }
-            
-            var vertices: [Vertex] = [
-                Vertex(position: vector_float2(normalizedX, -1.0), color: vector_float4(1, 1, 1, opacity)),
-                Vertex(position: vector_float2(normalizedX, 1.0), color: vector_float4(1, 1, 1, opacity))
-            ]
-            
-            let vertexBuffer = device.makeBuffer(bytes: &vertices, length: vertices.count * MemoryLayout<Vertex>.stride, options: [])
-            encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
-            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: 2)
-        }
-    }
-    
-    private func frequencyToX(_ frequency: Float, width: Float) -> Float {
-        // Logarithmic frequency mapping: 20Hz to 20kHz
-        let minFreq = log10(20.0)
-        let maxFreq = log10(20000.0)
-        let logFreq = log10(Double(frequency))
-        let fraction = Float((logFreq - minFreq) / (maxFreq - minFreq))
-        return fraction * width
-    }
-    
-    private func drawSpectrum(encoder: MTLRenderCommandEncoder, viewportSize: vector_float2,
-                            bands: [Float], peaks: [Float], gainReduction: [Float], yOffset: Float) {
-        guard bands.count > 1 else { return }
-        
-        let usableHeight = viewportSize.y - 30
-        let usableWidth = viewportSize.x - leftMargin - rightMargin
-        let xOffset: Float = leftMargin  // Use configurable left margin
-        
-        // Calculate positions for each band using EXACT SAME mapping as frequency grid
-        var bandPositions: [(x: Float, y: Float, db: Float, gr: Float)] = []
-        
-        let minFreqLog = log10(20.0)
-        let maxFreqLog = log10(20000.0)
-        let logRange = Float(maxFreqLog - minFreqLog)
-        
-        for i in 0..<bands.count {
-            // Use same logarithmic scale as grid and FFT processing
-            let fraction = Float(i) / Float(bands.count - 1)
-            let logFreq = minFreqLog + Double(fraction * logRange)
-            let freq = pow(10.0, logFreq)
-            
-            // Map to X coordinate using same function as grid, then add offset
-            let x = frequencyToX(Float(freq), width: usableWidth) + xOffset
-            let db = magnitudeToCalibratedDB(bands[i])
-            let y = dbToY(db, height: usableHeight) + yOffset
-            let gr = i < gainReduction.count ? gainReduction[i] : 0.0
-            bandPositions.append((x, y, db, gr))
-        }
-        
-        // Get dynamic color
-        let maxDB = bandPositions.map { $0.db }.max() ?? -60
-        let color = getQ3CurveColor(maxDB)
-        
-        // Draw filled area
-        drawFilledArea(encoder: encoder, viewportSize: viewportSize, bandPositions: bandPositions, color: color, yOffset: yOffset)
-        
-        // Generate interpolated curve vertices with higher detail
-        var vertices: [Vertex] = []
-        let curveDetail = 10 // Points to interpolate between each band
-        
-        for i in 0..<(bandPositions.count - 1) {
-            let p0 = i > 0 ? bandPositions[i - 1] : bandPositions[i]
-            let p1 = bandPositions[i]
-            let p2 = bandPositions[i + 1]
-            let p3 = i < bandPositions.count - 2 ? bandPositions[i + 2] : p2
-            
-            for t in 0..<curveDetail {
-                let t_norm = Float(t) / Float(curveDetail)
-                let point = catmullRomInterpolate(p0: p0, p1: p1, p2: p2, p3: p3, t: t_norm)
-                
-                let normalizedX = (point.x / viewportSize.x) * 2.0 - 1.0
-                let normalizedY = -(point.y / viewportSize.y) * 2.0 + 1.0
-                
-                vertices.append(Vertex(
-                    position: vector_float2(normalizedX, normalizedY),
-                    color: vector_float4(color.r, color.g, color.b, 1.0)
-                ))
-            }
-        }
-        
-        // Add the last point
-        if let last = bandPositions.last {
-            let normalizedX = (last.x / viewportSize.x) * 2.0 - 1.0
-            let normalizedY = -(last.y / viewportSize.y) * 2.0 + 1.0
-            vertices.append(Vertex(
-                position: vector_float2(normalizedX, normalizedY),
-                color: vector_float4(color.r, color.g, color.b, 1.0)
-            ))
-        }
-        
-        if !vertices.isEmpty {
-            encoder.setRenderPipelineState(pipelineState)
-            
-            // Multi-pass glow effect for visual appeal
-            drawCurveLine(encoder: encoder, vertices: vertices, alpha: 0.3)
-            drawCurveLine(encoder: encoder, vertices: vertices, alpha: 0.5)
-            drawCurveLine(encoder: encoder, vertices: vertices, alpha: 1.0)
-        }
-        
-        // Draw peak holds
-        drawPeakHolds(encoder: encoder, viewportSize: viewportSize, peaks: peaks, yOffset: yOffset)
-        
-        // Draw gain reduction meters
-        if showGainReduction {
-            drawGainReductionMeters(encoder: encoder, viewportSize: viewportSize,
-                                   bandPositions: bandPositions, yOffset: yOffset)
-        }
-    }
-    
-    private func drawCurveLine(encoder: MTLRenderCommandEncoder, vertices: [Vertex], alpha: Float) {
-        var glowVertices = vertices.map { vertex in
-            var v = vertex
-            v.color.w *= alpha
-            return v
-        }
-        
-        let vertexBuffer = device.makeBuffer(bytes: &glowVertices,
-                                            length: glowVertices.count * MemoryLayout<Vertex>.stride,
-                                            options: [])
-        encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
-        encoder.drawPrimitives(type: .lineStrip, vertexStart: 0, vertexCount: glowVertices.count)
-    }
-    
-    private func drawFilledArea(encoder: MTLRenderCommandEncoder, viewportSize: vector_float2,
-                               bandPositions: [(x: Float, y: Float, db: Float, gr: Float)],
-                               color: (r: Float, g: Float, b: Float, a: Float), yOffset: Float) {
-        encoder.setRenderPipelineState(fillPipelineState)
-        
-        var fillVertices: [Vertex] = []
-        let usableHeight = viewportSize.y - 30
-        let bottomY = -((usableHeight + yOffset) / viewportSize.y) * 2.0 + 1.0
-        
-        for pos in bandPositions {
-            let normalizedX = (pos.x / viewportSize.x) * 2.0 - 1.0
-            let normalizedY = -(pos.y / viewportSize.y) * 2.0 + 1.0
-            
-            let gradient_t = (pos.y - yOffset) / usableHeight
-            let fillColor = vector_float4(
-                color.r,
-                color.g * (1.0 - gradient_t * 0.5),
-                color.b,
-                0.15 * (1.0 - gradient_t * 0.5)
+            .foregroundColor(
+              analyser.q3EnhancedMode
+                ? Color.orange
+                : Color.white.opacity(0.28)
             )
-            
-            fillVertices.append(Vertex(position: vector_float2(normalizedX, normalizedY), color: fillColor))
-            fillVertices.append(Vertex(position: vector_float2(normalizedX, bottomY), color: vector_float4(0, 0, 0, 0)))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(Color.black.opacity(0.45))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+          }
+          .padding(6)
         }
-        
-        if !fillVertices.isEmpty {
-            let vertexBuffer = device.makeBuffer(bytes: &fillVertices,
-                                                length: fillVertices.count * MemoryLayout<Vertex>.stride,
-                                                options: [])
-            encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
-            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: fillVertices.count)
-        }
-    }
-    
-    private func drawPeakHolds(encoder: MTLRenderCommandEncoder, viewportSize: vector_float2, peaks: [Float], yOffset: Float) {
-        guard peaks.count > 1 else { return }
-        
-        encoder.setRenderPipelineState(pipelineState)
-        
-        let usableHeight = viewportSize.y - 30
-        let usableWidth = viewportSize.x - leftMargin - rightMargin
-        let xOffset: Float = leftMargin  // Use configurable left margin
-        
-        var vertices: [Vertex] = []
-        
-        let minFreqLog = log10(20.0)
-        let maxFreqLog = log10(20000.0)
-        let logRange = Float(maxFreqLog - minFreqLog)
-        
-        for i in 0..<peaks.count {
-            // Use same frequency mapping
-            let fraction = Float(i) / Float(peaks.count - 1)
-            let logFreq = minFreqLog + Double(fraction * logRange)
-            let freq = pow(10.0, logFreq)
-            let x = frequencyToX(Float(freq), width: usableWidth) + xOffset
-            
-            let db = magnitudeToCalibratedDB(peaks[i])
-            let y = dbToY(db, height: usableHeight) + yOffset
-            
-            let normalizedX = (x / viewportSize.x) * 2.0 - 1.0
-            let normalizedY = -(y / viewportSize.y) * 2.0 + 1.0
-            
-            vertices.append(Vertex(
-                position: vector_float2(normalizedX, normalizedY),
-                color: vector_float4(1, 1, 1, 0.6)
-            ))
-        }
-        
-        if !vertices.isEmpty {
-            let vertexBuffer = device.makeBuffer(bytes: &vertices,
-                                                length: vertices.count * MemoryLayout<Vertex>.stride,
-                                                options: [])
-            encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
-            encoder.drawPrimitives(type: .lineStrip, vertexStart: 0, vertexCount: vertices.count)
-        }
-    }
-    
-    private func drawGainReductionMeters(encoder: MTLRenderCommandEncoder, viewportSize: vector_float2,
-                                        bandPositions: [(x: Float, y: Float, db: Float, gr: Float)], yOffset: Float) {
-        encoder.setRenderPipelineState(fillPipelineState)
-        
-        let usableHeight = viewportSize.y - 30
-        let meterHeight: Float = 20.0
-        
-        for pos in bandPositions {
-            guard pos.gr > 0.1 else { continue }
-            
-            let normalizedGR = min(pos.gr / 12.0, 1.0) // Max 12dB reduction
-            let meterTop = yOffset
-            let meterBottom = meterTop + meterHeight
-            
-            let normalizedX = (pos.x / viewportSize.x) * 2.0 - 1.0
-            let normalizedYTop = -(meterTop / viewportSize.y) * 2.0 + 1.0
-            let normalizedYBottom = -(meterBottom / viewportSize.y) * 2.0 + 1.0
-            
-            // Color based on gain reduction amount
-            let color: vector_float4
-            if normalizedGR < 0.3 {
-                color = vector_float4(0.2, 0.9, 0.2, 0.6) // Green
-            } else if normalizedGR < 0.6 {
-                color = vector_float4(0.9, 0.9, 0.2, 0.6) // Yellow
-            } else {
-                color = vector_float4(0.9, 0.2, 0.2, 0.6) // Red
+      }
+      .contentShape(Rectangle())
+      .gesture(
+        DragGesture(minimumDistance: 0)
+          .onChanged { value in
+            let clamped = min(max(value.location.x / geo.size.width, 0), 1)
+            inspectFraction = clamped
+          }
+          .onEnded { _ in
+            withAnimation(.easeOut(duration: 0.45)) {
+              inspectFraction = nil
             }
-            
-            let width: Float = 2.0 / viewportSize.x * 5.0
-            
-            var meterVertices: [Vertex] = [
-                Vertex(position: vector_float2(normalizedX - width, normalizedYTop), color: color),
-                Vertex(position: vector_float2(normalizedX + width, normalizedYTop), color: color),
-                Vertex(position: vector_float2(normalizedX - width, normalizedYBottom), color: color),
-                Vertex(position: vector_float2(normalizedX + width, normalizedYBottom), color: color)
-            ]
-            
-            let vertexBuffer = device.makeBuffer(bytes: &meterVertices,
-                                                length: meterVertices.count * MemoryLayout<Vertex>.stride,
-                                                options: [])
-            encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
-            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-        }
+          }
+      )
     }
-    
-    // MARK: - Helper Functions
-    
-    private func catmullRomInterpolate(p0: (x: Float, y: Float, db: Float, gr: Float),
-                                      p1: (x: Float, y: Float, db: Float, gr: Float),
-                                      p2: (x: Float, y: Float, db: Float, gr: Float),
-                                      p3: (x: Float, y: Float, db: Float, gr: Float),
-                                      t: Float) -> (x: Float, y: Float) {
-        let t2 = t * t
-        let t3 = t2 * t
-        
-        let x = 0.5 * ((2 * p1.x) +
-                       (-p0.x + p2.x) * t +
-                       (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
-                       (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3)
-        
-        let y = 0.5 * ((2 * p1.y) +
-                       (-p0.y + p2.y) * t +
-                       (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
-                       (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3)
-        
-        return (x, y)
-    }
-    
-    private func magnitudeToCalibratedDB(_ normalized: Float) -> Float {
-        // Convert normalized (0-1) back to dB
-        // The analyzer converts: normalized = (dB + 60) / 60
-        // So: dB = (normalized * 60) - 60
-        let db = (normalized * 60.0) - 60.0
-        
-        // Only apply reference level offset when NOT auto-scaling
-        if autoScale {
-            return db  // Show true dB values
-        } else {
-            return db + referenceLevel  // Offset the display by reference level
-        }
-    }
-    
-    private func dbToY(_ db: Float, height: Float) -> Float {
-        let dbRange = currentMaxDB - currentMinDB
-        let normalizedPosition = (db - currentMinDB) / dbRange
-        return height * (1.0 - normalizedPosition)
-    }
-    
-    private func getQ3CurveColor(_ db: Float) -> (r: Float, g: Float, b: Float, a: Float) {
-        switch db {
-        case ..<(-12):
-            return (0.2, 0.9, 0.2, 1.0)
-        case -12..<(-3):
-            return (0.9, 0.9, 0.2, 1.0)
-        case -3..<3:
-            return (0.9, 0.5, 0.2, 1.0)
-        default:
-            return (0.9, 0.2, 0.2, 1.0)
-        }
-    }
+    .background(Color(red: 0.03, green: 0.03, blue: 0.07))
+    .clipShape(RoundedRectangle(cornerRadius: 8))
+  }
 }
 
-// MARK: - Vertex Structure
-struct Vertex {
-    var position: vector_float2
-    var color: vector_float4
+// MARK: - Q3MetalViewRepresentable
+
+private struct Q3MetalViewRepresentable: UIViewRepresentable {
+
+  @ObservedObject var analyser: UnifiedAudioAnalyser
+  let inspectFraction: CGFloat?
+
+  func makeCoordinator() -> Coordinator { Coordinator() }
+
+  func makeUIView(context: Context) -> MTKView {
+    let view = MTKView()
+    guard let device = MTLCreateSystemDefaultDevice() else { return view }
+
+    view.device = device
+    view.delegate = context.coordinator.renderer
+    view.preferredFramesPerSecond = 60
+    view.isPaused = false
+    view.enableSetNeedsDisplay = false
+    view.framebufferOnly = true
+    view.isOpaque = true
+    view.clearColor = MTLClearColorMake(0.03, 0.03, 0.07, 1.0)
+
+    context.coordinator.renderer.setup(device: device, view: view)
+    return view
+  }
+
+  func updateUIView(_ uiView: MTKView, context: Context) {
+    let r = context.coordinator.renderer
+    r.bands = analyser.q3SpectrumBands
+    r.peaks = analyser.q3PeakHolds
+    r.enhancedMode = analyser.q3EnhancedMode
+    r.inspectFraction = inspectFraction.map(Float.init)
+  }
+
+  final class Coordinator {
+    let renderer = Q3MetalRenderer()
+  }
 }
 
-// MARK: - SwiftUI Metal View
-struct Q3MetalView: UIViewRepresentable {
-    @ObservedObject var analyzer: UnifiedAudioAnalyser
-    @Binding var displayMode: SpectrumDisplayMode
-    @Binding var referenceLevel: Float
-    @Binding var showGainReduction: Bool
-    @Binding var autoScale: Bool
-    
-    func makeCoordinator() -> Coordinator {
-        Coordinator(analyzer: analyzer)
+// MARK: - Q3MetalRenderer
+
+/// Renders the spectrum using Metal draw calls. All geometry is built in pixel
+/// space (0…width, 0…height) and converted to NDC by `q3VertexShader`.
+final class Q3MetalRenderer: NSObject, MTKViewDelegate {
+
+  // Data written by the SwiftUI layer (main thread) and read each draw call.
+  var bands: [Float] = []
+  var peaks: [Float] = []
+  var enhancedMode: Bool = false
+  var inspectFraction: Float?
+
+  private var device: MTLDevice?
+  private var commandQueue: MTLCommandQueue?
+
+  /// Used for grid lines, fills, peak holds, and the inspect hairline.
+  private var gridPipelineState: MTLRenderPipelineState?
+  /// Used for the spectrum curve line — adds a subtle emission via `q3GlowFragmentShader`.
+  private var linePipelineState: MTLRenderPipelineState?
+
+  // MARK: Colour palette
+
+  private enum Palette {
+    // Flat mode — cyan
+    static let flatLine = SIMD4<Float>(0.00, 0.84, 1.00, 1.00)
+    static let flatFillTop = SIMD4<Float>(0.00, 0.72, 0.92, 0.44)
+    static let flatFillBottom = SIMD4<Float>(0.00, 0.36, 0.65, 0.00)
+    // A-weighted mode — amber
+    static let warmLine = SIMD4<Float>(1.00, 0.62, 0.08, 1.00)
+    static let warmFillTop = SIMD4<Float>(1.00, 0.55, 0.06, 0.40)
+    static let warmFillBottom = SIMD4<Float>(0.80, 0.28, 0.00, 0.00)
+    // Grid
+    static let grid = SIMD4<Float>(1.0, 1.0, 1.0, 0.07)
+    static let gridZeroDBFS = SIMD4<Float>(1.0, 1.0, 1.0, 0.18)
+    // Peak hold ticks
+    static let peakHold = SIMD4<Float>(1.0, 1.0, 1.0, 0.70)
+    // Inspect hairline
+    static let inspect = SIMD4<Float>(1.0, 1.0, 1.0, 0.42)
+  }
+
+  // MARK: Setup
+
+  func setup(device: MTLDevice, view: MTKView) {
+    self.device = device
+    commandQueue = device.makeCommandQueue()
+    buildPipelines(device: device, pixelFormat: view.colorPixelFormat)
+  }
+
+  private func buildPipelines(device: MTLDevice, pixelFormat: MTLPixelFormat) {
+    guard let library = device.makeDefaultLibrary() else {
+      print("Q3MetalRenderer: default Metal library not found")
+      return
     }
-    
-    func makeUIView(context: Context) -> MTKView {
-        let mtkView = MTKView()
-        mtkView.device = MTLCreateSystemDefaultDevice()
-        mtkView.preferredFramesPerSecond = 60
-        mtkView.enableSetNeedsDisplay = false
-        mtkView.isPaused = false
-        mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-        
-        context.coordinator.renderer = Q3MetalRenderer(metalDevice: mtkView.device!, analyzer: analyzer)
-        mtkView.delegate = context.coordinator.renderer
-        
-        return mtkView
+
+    /// Configures standard source-over alpha blending on a pipeline descriptor.
+    let applyBlending: (MTLRenderPipelineDescriptor) -> Void = { desc in
+      guard let att = desc.colorAttachments[0] else { return }
+      att.isBlendingEnabled = true
+      att.sourceRGBBlendFactor = .sourceAlpha
+      att.destinationRGBBlendFactor = .oneMinusSourceAlpha
+      att.sourceAlphaBlendFactor = .one
+      att.destinationAlphaBlendFactor = .oneMinusSourceAlpha
     }
-    
-    func updateUIView(_ uiView: MTKView, context: Context) {
-        context.coordinator.renderer?.displayMode = displayMode
-        context.coordinator.renderer?.referenceLevel = referenceLevel
-        context.coordinator.renderer?.showGainReduction = showGainReduction
-        context.coordinator.renderer?.autoScale = autoScale
+
+    let gridDesc = MTLRenderPipelineDescriptor()
+    gridDesc.vertexFunction = library.makeFunction(name: "q3VertexShader")
+    gridDesc.fragmentFunction = library.makeFunction(name: "gridFragmentShader")
+    gridDesc.colorAttachments[0]?.pixelFormat = pixelFormat
+    applyBlending(gridDesc)
+
+    let lineDesc = MTLRenderPipelineDescriptor()
+    lineDesc.vertexFunction = library.makeFunction(name: "q3VertexShader")
+    lineDesc.fragmentFunction = library.makeFunction(name: "q3GlowFragmentShader")
+    lineDesc.colorAttachments[0]?.pixelFormat = pixelFormat
+    applyBlending(lineDesc)
+
+    do {
+      gridPipelineState = try device.makeRenderPipelineState(descriptor: gridDesc)
+      linePipelineState = try device.makeRenderPipelineState(descriptor: lineDesc)
+    } catch {
+      print("Q3MetalRenderer: pipeline build error: \(error)")
     }
-    
-    class Coordinator: NSObject {
-        var analyzer: UnifiedAudioAnalyser
-        var renderer: Q3MetalRenderer?
-        
-        init(analyzer: UnifiedAudioAnalyser) {
-            self.analyzer = analyzer
-        }
+  }
+
+  // MARK: MTKViewDelegate
+
+  func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+
+  func draw(in view: MTKView) {
+    guard
+      let gridPipeline = gridPipelineState,
+      let linePipeline = linePipelineState,
+      let queue = commandQueue,
+      let drawable = view.currentDrawable,
+      let passDesc = view.currentRenderPassDescriptor,
+      let commandBuffer = queue.makeCommandBuffer(),
+      let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDesc)
+    else { return }
+
+    let viewSize = view.drawableSize
+    var viewport = SIMD2<Float>(Float(viewSize.width), Float(viewSize.height))
+
+    // Grid lines (horizontal dB + vertical frequency)
+    encoder.setRenderPipelineState(gridPipeline)
+    drawGrid(encoder: encoder, viewport: &viewport, size: viewSize)
+
+    let bandSnapshot = bands
+    let peakSnapshot = peaks
+
+    if !bandSnapshot.isEmpty {
+      // Gradient fill under the curve
+      drawFill(
+        encoder: encoder, viewport: &viewport,
+        bands: bandSnapshot, size: viewSize)
+
+      // Spectrum curve line (glow pipeline)
+      encoder.setRenderPipelineState(linePipeline)
+      drawLine(
+        encoder: encoder, viewport: &viewport,
+        bands: bandSnapshot, size: viewSize)
+
+      // Peak hold ticks
+      encoder.setRenderPipelineState(gridPipeline)
+      drawPeaks(
+        encoder: encoder, viewport: &viewport,
+        peaks: peakSnapshot, size: viewSize)
     }
+
+    // Inspect hairline
+    if let fraction = inspectFraction {
+      drawInspectLine(
+        encoder: encoder, viewport: &viewport,
+        fraction: fraction, size: viewSize)
+    }
+
+    encoder.endEncoding()
+    commandBuffer.present(drawable)
+    commandBuffer.commit()
+  }
+
+  // MARK: Coordinate helpers
+
+  /// Maps a band index to a pixel-space X coordinate.
+  /// Bands are already log-spaced, so linear mapping gives a logarithmic axis.
+  private func bandToX(_ index: Int, count: Int, width: Float) -> Float {
+    guard count > 1 else { return width / 2 }
+    return Float(index) / Float(count - 1) * width
+  }
+
+  /// Maps a normalised level [0, 1] to a pixel-space Y coordinate (0 = top).
+  private func levelToY(_ level: Float, height: Float) -> Float {
+    (1.0 - level) * height
+  }
+
+  /// Maps a frequency in Hz to a pixel-space X coordinate on a log scale.
+  private func freqToX(_ hz: Float, width: Float) -> Float {
+    let minLog = log10(Float(20))
+    let maxLog = log10(Float(20_000))
+    let fraction = (log10(hz) - minLog) / (maxLog - minLog)
+    return fraction * width
+  }
+
+  /// Maps a dBFS value to a pixel-space Y coordinate.
+  /// Display range is −90 dBFS (bottom) to 0 dBFS (top).
+  private func dBToY(_ dB: Float, height: Float) -> Float {
+    let normalised = (dB + 90.0) / 90.0
+    return (1.0 - normalised) * height
+  }
+
+  // MARK: Buffer submission
+
+  private func submit(
+    vertices: [Q3Vertex],
+    encoder: MTLRenderCommandEncoder,
+    viewport: inout SIMD2<Float>,
+    primitive: MTLPrimitiveType
+  ) {
+    guard !vertices.isEmpty, let device = device else { return }
+    guard let buffer = device.makeBuffer(
+      bytes: vertices,
+      length: vertices.count * MemoryLayout<Q3Vertex>.stride,
+      options: .storageModeShared
+    ) else { return }
+
+    encoder.setVertexBuffer(buffer, offset: 0, index: 0)
+    encoder.setVertexBytes(&viewport, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
+    encoder.drawPrimitives(type: primitive, vertexStart: 0, vertexCount: vertices.count)
+  }
+
+  // MARK: Draw passes
+
+  private func drawGrid(
+    encoder: MTLRenderCommandEncoder,
+    viewport: inout SIMD2<Float>,
+    size: CGSize
+  ) {
+    let w = Float(size.width)
+    let h = Float(size.height)
+    var vertices: [Q3Vertex] = []
+
+    // Horizontal dBFS lines
+    for dB: Float in [-80, -70, -60, -50, -40, -30, -20, -10] {
+      let y = dBToY(dB, height: h)
+      vertices.append(Q3Vertex(0, y, color: Palette.grid))
+      vertices.append(Q3Vertex(w, y, color: Palette.grid))
+    }
+    // 0 dBFS reference line — slightly brighter
+    let yZero = dBToY(0, height: h)
+    vertices.append(Q3Vertex(0, yZero, color: Palette.gridZeroDBFS))
+    vertices.append(Q3Vertex(w, yZero, color: Palette.gridZeroDBFS))
+
+    // Vertical frequency lines
+    for hz: Float in [20, 50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000] {
+      let x = freqToX(hz, width: w)
+      vertices.append(Q3Vertex(x, 0, color: Palette.grid))
+      vertices.append(Q3Vertex(x, h, color: Palette.grid))
+    }
+
+    submit(vertices: vertices, encoder: encoder, viewport: &viewport, primitive: .line)
+  }
+
+  private func drawFill(
+    encoder: MTLRenderCommandEncoder,
+    viewport: inout SIMD2<Float>,
+    bands: [Float],
+    size: CGSize
+  ) {
+    let n = bands.count
+    guard n > 1 else { return }
+    let w = Float(size.width)
+    let h = Float(size.height)
+
+    let topColor = enhancedMode ? Palette.warmFillTop : Palette.flatFillTop
+    let botColor = enhancedMode ? Palette.warmFillBottom : Palette.flatFillBottom
+
+    // Triangle strip: top vertex at curve height + bottom vertex at floor, per band.
+    var vertices: [Q3Vertex] = []
+    vertices.reserveCapacity(n * 2)
+
+    for i in 0..<n {
+      let x = bandToX(i, count: n, width: w)
+      let y = levelToY(bands[i], height: h)
+      vertices.append(Q3Vertex(x, y, color: topColor))
+      vertices.append(Q3Vertex(x, h, color: botColor))
+    }
+
+    submit(
+      vertices: vertices, encoder: encoder, viewport: &viewport,
+      primitive: .triangleStrip)
+  }
+
+  private func drawLine(
+    encoder: MTLRenderCommandEncoder,
+    viewport: inout SIMD2<Float>,
+    bands: [Float],
+    size: CGSize
+  ) {
+    let n = bands.count
+    guard n > 1 else { return }
+    let w = Float(size.width)
+    let h = Float(size.height)
+
+    let lineColor = enhancedMode ? Palette.warmLine : Palette.flatLine
+
+    var vertices: [Q3Vertex] = []
+    vertices.reserveCapacity(n)
+
+    for i in 0..<n {
+      let x = bandToX(i, count: n, width: w)
+      let y = levelToY(bands[i], height: h)
+      vertices.append(Q3Vertex(x, y, color: lineColor))
+    }
+
+    submit(vertices: vertices, encoder: encoder, viewport: &viewport, primitive: .lineStrip)
+  }
+
+  private func drawPeaks(
+    encoder: MTLRenderCommandEncoder,
+    viewport: inout SIMD2<Float>,
+    peaks: [Float],
+    size: CGSize
+  ) {
+    let n = peaks.count
+    guard n > 1 else { return }
+    let w = Float(size.width)
+    let h = Float(size.height)
+    // Each peak tick spans 40% of one band's width
+    let halfTick = (w / Float(n - 1)) * 0.20
+
+    var vertices: [Q3Vertex] = []
+
+    for i in 0..<n {
+      guard peaks[i] > 0.012 else { continue }
+      let x = bandToX(i, count: n, width: w)
+      let y = levelToY(peaks[i], height: h)
+      vertices.append(Q3Vertex(x - halfTick, y, color: Palette.peakHold))
+      vertices.append(Q3Vertex(x + halfTick, y, color: Palette.peakHold))
+    }
+
+    guard !vertices.isEmpty else { return }
+    submit(vertices: vertices, encoder: encoder, viewport: &viewport, primitive: .line)
+  }
+
+  private func drawInspectLine(
+    encoder: MTLRenderCommandEncoder,
+    viewport: inout SIMD2<Float>,
+    fraction: Float,
+    size: CGSize
+  ) {
+    let x = fraction * Float(size.width)
+    let h = Float(size.height)
+    let vertices: [Q3Vertex] = [
+      Q3Vertex(x, 0, color: Palette.inspect),
+      Q3Vertex(x, h, color: Palette.inspect),
+    ]
+    submit(vertices: vertices, encoder: encoder, viewport: &viewport, primitive: .line)
+  }
 }
 
-// MARK: - Final SwiftUI View with Controls
-struct Q3AnalyzerView: View {
-    @ObservedObject var analyzer: UnifiedAudioAnalyser
-    @EnvironmentObject var theme: ThemeManager
-    
-    @State private var displayMode: SpectrumDisplayMode = .stereo
-    @State private var referenceLevel: Float = -12.0
-    @State private var showGainReduction: Bool = true
-    @State private var autoScale: Bool = true
-    
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                // Metal view
-                Q3MetalView(analyzer: analyzer,
-                           displayMode: $displayMode,
-                           referenceLevel: $referenceLevel,
-                           showGainReduction: $showGainReduction,
-                           autoScale: $autoScale)
-                
-                // dB labels (left side)
-                VStack(spacing: 0) {
-                    Spacer()
-                        .frame(height: 10)
-                    
-                    ForEach(getDBPositions(height: geometry.size.height - 30), id: \.db) { position in
-                        HStack {
-                            Text("\(Int(position.db))dB")
-                                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                .foregroundColor(abs(position.db) < 0.1 ? Color(red: 1.0, green: 0.3, blue: 0.3) : .white.opacity(0.5))
-                                .frame(width: 35, alignment: .trailing)
-                                .offset(y: -4)
-                            
-                            Spacer()
-                        }
-                        .frame(height: 0)
-                        .offset(y: position.y)
-                    }
-                    
-                    Spacer()
-                }
-                .frame(maxHeight: .infinity, alignment: .top)
-                
-                // Frequency labels (bottom)
-                VStack {
-                    Spacer()
-                    
-                    HStack(spacing: 0) {
-                        Spacer()
-                            .frame(width: 30)  // Should match leftMargin
-                        
-                        ZStack(alignment: .top) {
-                            ForEach(getFrequencyPositions(width: geometry.size.width - 60), id: \.freq) { position in
-                                Text(position.label)
-                                    .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                    .foregroundColor(.white.opacity(position.major ? 0.8 : 0.5))
-                                    .offset(x: position.x, y: 0)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        
-                        Spacer()
-                            .frame(width: 30)
-                    }
-                    .frame(height: 20)
-                    .padding(.bottom, 5)
-                }
-                
-                // Controls (top right)
-                VStack(spacing: 8) {
-                    // Display mode selector
-                    Menu {
-                        ForEach(SpectrumDisplayMode.allCases, id: \.self) { mode in
-                            Button(action: {
-                                displayMode = mode
-                            }) {
-                                HStack {
-                                    Text(mode.rawValue)
-                                    if displayMode == mode {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
-                    } label: {
-                        HStack {
-                            Text(displayMode.rawValue)
-                                .font(.system(size: 10))
-                                .foregroundColor(.white.opacity(0.8))
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 8))
-                                .foregroundColor(.white.opacity(0.6))
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.white.opacity(0.1))
-                        .cornerRadius(4)
-                    }
-                    
-                    Divider()
-                        .background(Color.white.opacity(0.2))
-                    
-                    // Auto-scale toggle
-                    Button(action: { autoScale.toggle() }) {
-                        VStack(spacing: 2) {
-                            Image(systemName: autoScale ? "arrow.up.arrow.down.circle.fill" : "arrow.up.arrow.down.circle")
-                                .font(.system(size: 16))
-                                .foregroundColor(autoScale ? .cyan : .white.opacity(0.6))
-                            Text("Auto")
-                                .font(.system(size: 8))
-                                .foregroundColor(.white.opacity(0.6))
-                        }
-                    }
-                    
-                    Divider()
-                        .background(Color.white.opacity(0.2))
-                    
-                    // Reference level controls
-                    Button(action: { referenceLevel -= 3 }) {
-                        Image(systemName: "minus.circle.fill")
-                            .font(.system(size: 16))
-                            .foregroundColor(.white.opacity(autoScale ? 0.3 : 0.6))
-                    }
-                    .disabled(autoScale)
-                    
-                    Text("\(Int(referenceLevel))dB")
-                        .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(autoScale ? 0.3 : 0.6))
-                    
-                    Button(action: { referenceLevel += 3 }) {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.system(size: 16))
-                            .foregroundColor(.white.opacity(autoScale ? 0.3 : 0.6))
-                    }
-                    .disabled(autoScale)
-                    
-                    Divider()
-                        .background(Color.white.opacity(0.2))
-                    
-                    // Gain reduction toggle
-                    Button(action: { showGainReduction.toggle() }) {
-                        VStack(spacing: 2) {
-                            Image(systemName: showGainReduction ? "chart.bar.fill" : "chart.bar")
-                                .font(.system(size: 16))
-                                .foregroundColor(showGainReduction ? .green : .white.opacity(0.6))
-                            Text("GR")
-                                .font(.system(size: 8))
-                                .foregroundColor(.white.opacity(0.6))
-                        }
-                    }
-                }
-                .padding(8)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            }
-        }
+// MARK: - Q3AxisLabels
+
+/// Renders frequency labels along the bottom edge and dBFS labels along the
+/// right edge using SwiftUI text, which is always crisp regardless of display scale.
+private struct Q3AxisLabels: View {
+
+  let size: CGSize
+
+  private let frequencyMarkers: [(label: String, hz: Float)] = [
+    ("20", 20), ("50", 50), ("100", 100), ("200", 200), ("500", 500),
+    ("1k", 1_000), ("2k", 2_000), ("5k", 5_000), ("10k", 10_000), ("20k", 20_000),
+  ]
+
+  private let dBMarkers: [Float] = [0, -10, -20, -30, -40, -50, -60, -70, -80]
+
+  private func xForFrequency(_ hz: Float) -> CGFloat {
+    let minLog = log10(Float(20))
+    let maxLog = log10(Float(20_000))
+    return CGFloat((log10(hz) - minLog) / (maxLog - minLog)) * size.width
+  }
+
+  private func yForDB(_ dB: Float) -> CGFloat {
+    (1.0 - CGFloat((dB + 90.0) / 90.0)) * size.height
+  }
+
+  var body: some View {
+    ZStack {
+      // Frequency labels — bottom edge
+      ForEach(frequencyMarkers, id: \.hz) { marker in
+        Text(marker.label)
+          .font(.system(size: 7.5, weight: .medium, design: .monospaced))
+          .foregroundColor(.white.opacity(0.28))
+          .position(x: xForFrequency(marker.hz), y: size.height - 7)
+      }
+
+      // dBFS labels — right edge
+      ForEach(dBMarkers, id: \.self) { dB in
+        Text("\(Int(dB))")
+          .font(.system(size: 7.5, weight: .medium, design: .monospaced))
+          .foregroundColor(.white.opacity(0.28))
+          .position(x: size.width - 11, y: yForDB(dB))
+      }
     }
-    
-    private func getDBPositions(height: CGFloat) -> [(db: Float, y: CGFloat)] {
-        var positions: [(db: Float, y: CGFloat)] = []
-        var db: Float = -60
-        
-        while db <= 6 {
-            let dbRange: Float = 6 - (-60)
-            let normalizedPosition = (db - (-60)) / dbRange
-            let y = height * CGFloat(1.0 - normalizedPosition)
-            
-            if Int(db) % 12 == 0 || abs(db) < 0.1 {
-                positions.append((db, y))
-            }
-            
-            db += 6
-        }
-        
-        return positions
+  }
+}
+
+// MARK: - Q3InspectOverlay
+
+/// A floating readout pill showing the frequency and dBFS level at the
+/// current inspect cursor position. Clamped so it never overflows the view.
+private struct Q3InspectOverlay: View {
+
+  let fraction: CGFloat
+  let size: CGSize
+  let analyser: UnifiedAudioAnalyser
+
+  private var inspectInfo: (frequency: Float, dBFS: Float) {
+    let minLog = log10(Float(20))
+    let maxLog = log10(Float(20_000))
+    let logFreq = minLog + Float(fraction) * (maxLog - minLog)
+    let frequency = pow(10.0, logFreq)
+
+    let bands = analyser.q3SpectrumBands
+    guard !bands.isEmpty else { return (frequency, -90) }
+    let index = min(
+      Int(fraction * CGFloat(bands.count - 1)),
+      bands.count - 1)
+    let value = bands[max(0, index)]
+    // Reverse the normalisation: value ∈ [0,1] → dBFS ∈ [-90, 0]
+    let dBFS = value * 90.0 - 90.0
+
+    return (frequency, dBFS)
+  }
+
+  private var frequencyLabel: String {
+    let f = inspectInfo.frequency
+    return f >= 1_000
+      ? String(format: "%.2f kHz", f / 1_000)
+      : String(format: "%.0f Hz", f)
+  }
+
+  var body: some View {
+    let cursorX = fraction * size.width
+    let info = inspectInfo
+    // Keep the pill inside the view horizontally
+    let pillX = min(max(cursorX, 46), size.width - 46)
+
+    VStack(spacing: 2) {
+      Text(frequencyLabel)
+        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+        .foregroundColor(.white)
+      Text(String(format: "%.1f dBFS", info.dBFS))
+        .font(.system(size: 9, weight: .regular, design: .monospaced))
+        .foregroundColor(.white.opacity(0.62))
     }
-    
-    private func getFrequencyPositions(width: CGFloat) -> [(freq: Float, label: String, major: Bool, x: CGFloat)] {
-        let frequencies: [(Float, String, Bool)] = [
-            (20, "20", false),
-            (50, "50", false),
-            (100, "100", true),
-            (200, "200", false),
-            (500, "500", false),
-            (1000, "1k", true),
-            (2000, "2k", false),
-            (5000, "5k", false),
-            (10000, "10k", true),
-            (20000, "20k", false)
-        ]
-        
-        return frequencies.map { freq, label, major in
-            let minFreq = log10(20.0)
-            let maxFreq = log10(20000.0)
-            let logFreq = log10(Double(freq))
-            let fraction = CGFloat((logFreq - minFreq) / (maxFreq - minFreq))
-            let x = width * fraction
-            
-            return (freq, label, major, x)
-        }
-    }
+    .padding(.horizontal, 8)
+    .padding(.vertical, 5)
+    .background(.ultraThinMaterial)
+    .overlay(
+      RoundedRectangle(cornerRadius: 6)
+        .stroke(Color.white.opacity(0.14), lineWidth: 0.5)
+    )
+    .clipShape(RoundedRectangle(cornerRadius: 6))
+    .position(x: pillX, y: 22)
+  }
 }
