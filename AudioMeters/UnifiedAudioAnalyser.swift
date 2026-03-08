@@ -162,7 +162,9 @@ class UnifiedAudioAnalyser: ObservableObject {
 
   internal let fftSize: Int = 8192
   private let bandCount = 32
-  private let maxStereoPoints = 100
+  /// Increased to 400 so the Metal goniometer renderer has enough scatter
+  /// density to produce a visually dense Lissajous plot at 60 fps.
+  private let maxStereoPoints = 400
   private let hopSize: Int
   private let overlapFactor: Float = 0.75
 
@@ -284,18 +286,43 @@ class UnifiedAudioAnalyser: ObservableObject {
 
   // MARK: Audio attachment
 
-  func attach(to audioEngine: AVAudioEngine) {
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-      self.attachTapAfterEngineStabilizes(audioEngine)
+  /// Schedules a tap on `audioEngine`'s main mixer.
+  ///
+  /// - Parameters:
+  ///   - audioEngine: The engine to tap.
+  ///   - generation:  Opaque integer supplied by AudioManager. Unused here;
+  ///                  the `isCurrent` closure is the actual cancellation gate.
+  ///   - isCurrent:   Called just before the tap fires. Return `false` to
+  ///                  abort — AudioManager bumps its generation counter on
+  ///                  every new song so stale closures self-cancel.
+  func attach(to audioEngine: AVAudioEngine,
+              generation: Int = 0,
+              isCurrent: @escaping () -> Bool = { true }) {
+    // Single 150 ms delay — enough for AVAudioEngine to finish its internal
+    // graph reconfiguration after play(). No nested asyncAfter.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+      guard let self else { return }
+      guard isCurrent() else { return }          // cancelled by a newer song
+      self.installTapSafely(on: audioEngine)
     }
   }
 
-  private func attachTapAfterEngineStabilizes(_ audioEngine: AVAudioEngine) {
-    node = MixerNodeWrapper(audioEngine.mainMixerNode)
-    let mixer = audioEngine.mainMixerNode
+  /// Installs the analysis tap with all guards that prevent ObjC exceptions.
+  private func installTapSafely(on audioEngine: AVAudioEngine) {
+    // installTap on a stopped engine throws an uncatchable ObjC exception.
+    guard audioEngine.isRunning else { return }
+
+    let mixer  = audioEngine.mainMixerNode
     let format = mixer.outputFormat(forBus: 0)
-    sampleRate = Float(format.sampleRate)
+
+    // Zero sample rate or channel count means the output is not yet configured.
+    guard format.sampleRate > 0, format.channelCount > 0 else { return }
+
+    // Always remove before installing — a second tap on the same bus crashes.
     mixer.removeTap(onBus: 0)
+
+    sampleRate = Float(format.sampleRate)
+    node = MixerNodeWrapper(mixer)
 
     mixer.installTap(
       onBus: 0,

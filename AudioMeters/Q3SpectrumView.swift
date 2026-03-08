@@ -1,4 +1,3 @@
-
 import Accelerate
 import MetalKit
 import SwiftUI
@@ -7,7 +6,7 @@ import SwiftUI
 
 /// Swift mirror of the Metal `Vertex` struct (float2 position + float4 color).
 /// Memory layout must stay identical to the Metal declaration.
-private struct Q3Vertex {
+public struct Q3Vertex {
   var position: SIMD2<Float>
   var color: SIMD4<Float>
 
@@ -99,7 +98,7 @@ struct Q3SpectrumView: View {
           }
       )
     }
-    .background(Color(red: 0.03, green: 0.03, blue: 0.07))
+    .background(Color.clear)
     .clipShape(RoundedRectangle(cornerRadius: 8))
   }
 }
@@ -123,8 +122,9 @@ private struct Q3MetalViewRepresentable: UIViewRepresentable {
     view.isPaused = false
     view.enableSetNeedsDisplay = false
     view.framebufferOnly = true
-    view.isOpaque = true
-    view.clearColor = MTLClearColorMake(0.03, 0.03, 0.07, 1.0)
+    view.isOpaque = false
+    view.backgroundColor = .clear
+    view.clearColor = MTLClearColorMake(0, 0, 0, 0)
 
     context.coordinator.renderer.setup(device: device, view: view)
     return view

@@ -304,3 +304,166 @@ fragment float4 q3GlowFragmentShader(VertexOut in [[stage_in]])
     return color;
 }
 
+
+// MARK: - Goniometer Shaders
+
+/// Per-vertex data for goniometer scatter dots.
+/// Carries an `age` value in [0, 1] (0 = oldest, 1 = newest) that the vertex
+/// shader uses to compute point size and alpha, producing an exponential
+/// phosphor-decay effect without any per-frame texture blending.
+struct GonioVertex {
+    float2 position;  // pixel space (0…width, 0…height)
+    float4 color;
+    float  age;       // 0 = oldest, 1 = newest
+};
+
+/// Pixel-space vertex shader for goniometer scatter dots.
+///
+/// - Point size scales from 0.9 px (oldest) to 3.0 px (newest).
+/// - Alpha is `pow(age, 1.6)` — exponential decay that lets the newest
+///   signal read clearly while older dots dissolve naturally.
+/// - Y is flipped to match UIKit/SwiftUI coordinate conventions.
+///
+/// Buffer 0: `GonioVertex` array
+/// Buffer 1: viewport size as `float2`
+vertex VertexOut gonioPointVertexShader(
+    const device GonioVertex *vertices [[buffer(0)]],
+    constant float2            &vp     [[buffer(1)]],
+    uint vertexID [[vertex_id]])
+{
+    GonioVertex v = vertices[vertexID];
+
+    // Pixel space → NDC with Y-flip
+    float2 ndc = float2(
+        (v.position.x / vp.x) * 2.0 - 1.0,
+        1.0 - (v.position.y / vp.y) * 2.0
+    );
+
+    VertexOut out;
+    out.position  = float4(ndc, 0.0, 1.0);
+    out.color     = v.color;
+    out.color.a   = pow(v.age, 1.6);          // exponential phosphor decay
+    out.pointSize = 0.9 + v.age * 2.1;         // size grows with recency
+    return out;
+}
+
+/// Fragment shader for goniometer scatter dots.
+///
+/// Renders each point sprite as a smooth anti-aliased disc using the
+/// built-in `point_coord` attribute. The smooth-step edge removes the
+/// hard square boundary of a raw point primitive.
+fragment float4 gonioPointFragmentShader(
+    VertexOut in             [[stage_in]],
+    float2    pointCoord     [[point_coord]])
+{
+    // Map pointCoord from [0,1]² to signed [-1,1]² and compute distance
+    float dist  = length(pointCoord - 0.5) * 2.0;
+    float alpha = smoothstep(1.0, 0.35, dist);  // soft circular edge
+
+    float4 color = in.color;
+    color.a *= alpha;
+    return color;
+}
+
+/// Pixel-space vertex shader for goniometer guide geometry (circles, axes)
+/// and trail lines. Identical mapping to `q3VertexShader`; duplicated here
+/// so goniometer and spectrum pipelines are independently configurable.
+vertex VertexOut gonioLineVertexShader(
+    const device Vertex *vertices [[buffer(0)]],
+    constant float2     &vp       [[buffer(1)]],
+    uint vertexID [[vertex_id]])
+{
+    float2 pixelPos = vertices[vertexID].position;
+    float2 ndc = float2(
+        (pixelPos.x / vp.x) * 2.0 - 1.0,
+        1.0 - (pixelPos.y / vp.y) * 2.0
+    );
+
+    VertexOut out;
+    out.position  = float4(ndc, 0.0, 1.0);
+    out.color     = vertices[vertexID].color;
+    out.pointSize = 1.0;
+    return out;
+}
+
+/// Passthrough fragment shader for guide lines and trails.
+/// Color (including alpha) is set entirely by the vertex data, allowing
+/// per-vertex alpha fading on trail line strips.
+fragment float4 gonioLineFragmentShader(VertexOut in [[stage_in]])
+{
+    return in.color;
+}
+
+// MARK: - Enhanced Goniometer Glow Shaders
+//
+// Two new shader functions used by GoniometerMetalRenderer's glow pipeline.
+// The renderer calls drawPrimitives(.point) three times per frame (scatter)
+// and twice (trail), each time with different GonioGlowUniforms values,
+// producing layered bloom: wide soft glow → medium halo → crisp core.
+
+/// Per-draw uniforms that control point size and alpha for a single glow layer.
+/// Swift mirror: `GonioGlowUniforms` (8 bytes — two floats, buffer slot 2).
+struct GonioGlowUniforms {
+    float pointSizeScale;   // multiplier applied to the age-derived base size
+    float alphaScale;       // overall alpha multiplier for this layer
+};
+
+/// Pixel-space vertex shader for goniometer glow point sprites.
+///
+/// Identical NDC mapping to `gonioPointVertexShader` but accepts a
+/// `GonioGlowUniforms` uniform (buffer 2) so the caller can vary point
+/// size and alpha per layer without rebuilding the vertex buffer.
+///
+/// - Point size: `(1.2 + age * 2.8) * pointSizeScale`
+///   → outer glow pass uses scale ≈ 6, core pass uses scale ≈ 1.
+/// - Alpha: `pow(age, 1.5) * alphaScale`
+///   → gives phosphor-decay falloff on old samples regardless of layer.
+///
+/// Buffer 0: GonioVertex array (position float2, color float4, age float)
+/// Buffer 1: viewport size float2
+/// Buffer 2: GonioGlowUniforms
+vertex VertexOut gonioGlowPointVertexShader(
+    const device GonioVertex       *vertices [[buffer(0)]],
+    constant float2                &vp       [[buffer(1)]],
+    constant GonioGlowUniforms     &uni      [[buffer(2)]],
+    uint vertexID [[vertex_id]])
+{
+    GonioVertex v = vertices[vertexID];
+
+    // Pixel space → NDC, Y-flipped to match UIKit/SwiftUI coordinate origin
+    float2 ndc = float2(
+        (v.position.x / vp.x) * 2.0 - 1.0,
+        1.0 - (v.position.y / vp.y) * 2.0
+    );
+
+    VertexOut out;
+    out.position  = float4(ndc, 0.0, 1.0);
+    out.color     = v.color;
+    out.color.a   = pow(v.age, 1.5) * uni.alphaScale;
+    out.pointSize = (1.2 + v.age * 2.8) * uni.pointSizeScale;
+    return out;
+}
+
+/// Fragment shader for goniometer glow point sprites.
+///
+/// Uses a Gaussian radial falloff instead of the hard smoothstep used by
+/// `gonioPointFragmentShader`.  The Gaussian `exp(−d² · 2.8)` produces a
+/// natural "bloom" appearance: bright core that dissolves softly outward,
+/// which layers convincingly across the three scatter/trail passes.
+///
+/// When the same vertex buffer is rendered with a large pointSizeScale the
+/// shader's wide, low-alpha halo provides the ambient bloom.  A subsequent
+/// pass with scale ≈ 1 gives the bright dot in the centre.
+fragment float4 gonioGlowFragmentShader(
+    VertexOut in         [[stage_in]],
+    float2    pointCoord [[point_coord]])
+{
+    float dist  = length(pointCoord - 0.5) * 2.0;         // [0, ~1.41]
+    float alpha = exp(-dist * dist * 2.8);                 // Gaussian bloom
+
+    // Slightly brighten the core to give the hotspot a white-hot centre
+    float core  = exp(-dist * dist * 18.0);
+    float3 rgb  = in.color.rgb + core * 0.35 * (1.0 - in.color.rgb);
+
+    return float4(rgb, in.color.a * alpha);
+}

@@ -79,33 +79,33 @@ struct AudioPlayerView: View {
     @ViewBuilder
     private var visualisationView: some View {
         switch audioManager.visualisationMode {
-        case .both:
-            VStack(spacing: 20) {
-                SpectrumView(analyzer: audioManager.audioAnalyzer)
-                    .frame(height: 140)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+        //case .both:
+         //   VStack(spacing: 20) {
+          //      SpectrumView(analyzer: audioManager.audioAnalyzer)
+          //          .frame(height: 140)
+          //          .transition(.move(edge: .top).combined(with: .opacity))
 
-                GoniometerView(analyzer: audioManager.audioAnalyzer)
-                    .frame(height: 150)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+          //      GoniometerView(analyzer: audioManager.audioAnalyzer)
+          //          .frame(height: 150)
+          //          .transition(.move(edge: .bottom).combined(with: .opacity))
+          //  }
 
-        case .spectrumOnly:
-            SpectrumView(analyzer: audioManager.audioAnalyzer)
-                .frame(maxHeight: .infinity)
-                .transition(.scale.combined(with: .opacity))
+        //case .spectrumOnly:
+        //    SpectrumView(analyzer: audioManager.audioAnalyzer)
+        //        .frame(maxHeight: .infinity)
+        //        .transition(.scale.combined(with: .opacity))
 
-        case .goniometerOnly:
+        case .Goniometer:
             GoniometerView(analyzer: audioManager.audioAnalyzer)
                 .frame(maxHeight: .infinity)
                 .transition(.scale.combined(with: .opacity))
         
-        case .q3Spectrum:
-            Q3AnalyzerView(analyzer: audioManager.audioAnalyzer)
+        case .Spectrum:
+            Q3SpectrumView(analyser: audioManager.audioAnalyzer)
                 .frame(maxWidth: CGFloat.infinity)
                 .transition(.scale.combined(with: .opacity))
 
-        case .albumArt:
+        case .Artwork:
             if let name = currentFile.artworkImageName,
                let artwork = audioManager.artworkService.loadArtworkImage(name) {
                 Image(uiImage: artwork)
