@@ -1482,7 +1482,7 @@ struct AudioFileRow: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 Text(formatTime(audioFile.audioDuration))
-                .font(.caption).foregroundStyle(theme.secondaryTextColor)
+                    .font(.custom("HelveticaNeue-Light", size: 13, relativeTo: .body)).foregroundStyle(theme.secondaryTextColor)
                 .lineLimit(1)
             }
             Spacer()

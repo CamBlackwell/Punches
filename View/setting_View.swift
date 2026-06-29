@@ -536,22 +536,182 @@ enum AppearanceMode: String, CaseIterable {
     case dark  = "Dark"
 }
 
-class ThemeManager: ObservableObject {
-    // Default to Nord
-    @Published var backgroundColor    = Color(hex: "#2e3440")
-    @Published var textColor          = Color(hex: "#eceff4")
-    @Published var accentColor        = Color(hex: "#4c566a")
-    @Published var secondaryTextColor = Color(hex: "#88c0d0")
-    @Published var tint               = Color(hex: "#88c0d0")
-    @Published var gonioSidesColor    = Color(hex: "#bf616a")
-    @Published var gonioMidsColor     = Color(hex: "#b48ead")
-    @Published var playButtonColor    = Color(hex: "#eceff4")
-    @Published var useWaterShader: Bool   = false
-    // Fixed aqua blue — not user-configurable
-    let waterColor: Color                 = Color(hex: "#2A7FAA")
-    @Published var waterSpeed: Double     = 1.0
-    @Published var waterIntensity: Double = 0.5
-    @Published var appearanceMode: AppearanceMode = .dark
+// MARK: - UserDefaults Keys
+
+private enum ThemeKey {
+    static let backgroundColor    = "theme.backgroundColor"
+    static let textColor          = "theme.textColor"
+    static let secondaryTextColor = "theme.secondaryTextColor"
+    static let accentColor        = "theme.accentColor"
+    static let tint               = "theme.tint"
+    static let gonioSidesColor    = "theme.gonioSidesColor"
+    static let gonioMidsColor     = "theme.gonioMidsColor"
+    static let playButtonColor    = "theme.playButtonColor"
+    static let useWaterShader     = "theme.useWaterShader"
+    static let waterSpeed         = "theme.waterSpeed"
+    static let waterIntensity     = "theme.waterIntensity"
+    static let appearanceMode     = "theme.appearanceMode"
+    static let selectedDarkTheme  = "theme.selectedDarkTheme"
+    static let selectedLightTheme = "theme.selectedLightTheme"
+}
+
+// MARK: - Color ↔ UserDefaults helpers
+
+private extension Color {
+    /// Encodes a Color as a hex string for UserDefaults storage.
+    var hexString: String {
+        let resolved = UIColor(self)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        resolved.getRed(&r, green: &g, blue: &b, alpha: &a)
+        let ri = Int(r * 255), gi = Int(g * 255), bi = Int(b * 255)
+        return String(format: "#%02x%02x%02x", ri, gi, bi)
+    }
+}
+
+// MARK: - ThemeManager
+
+final class ThemeManager: ObservableObject {
+
+    // ── Published colours ────────────────────────────────────────────────────
+
+    @Published var backgroundColor: Color {
+        didSet { save(backgroundColor.hexString, for: ThemeKey.backgroundColor) }
+    }
+    @Published var textColor: Color {
+        didSet { save(textColor.hexString, for: ThemeKey.textColor) }
+    }
+    @Published var secondaryTextColor: Color {
+        didSet { save(secondaryTextColor.hexString, for: ThemeKey.secondaryTextColor) }
+    }
+    @Published var accentColor: Color {
+        didSet { save(accentColor.hexString, for: ThemeKey.accentColor) }
+    }
+    @Published var tint: Color {
+        didSet { save(tint.hexString, for: ThemeKey.tint) }
+    }
+    @Published var gonioSidesColor: Color {
+        didSet { save(gonioSidesColor.hexString, for: ThemeKey.gonioSidesColor) }
+    }
+    @Published var gonioMidsColor: Color {
+        didSet { save(gonioMidsColor.hexString, for: ThemeKey.gonioMidsColor) }
+    }
+    @Published var playButtonColor: Color {
+        didSet { save(playButtonColor.hexString, for: ThemeKey.playButtonColor) }
+    }
+
+    // ── Published shader / behaviour ─────────────────────────────────────────
+
+    @Published var useWaterShader: Bool {
+        didSet { UserDefaults.standard.set(useWaterShader, forKey: ThemeKey.useWaterShader) }
+    }
+    @Published var waterSpeed: Double {
+        didSet { UserDefaults.standard.set(waterSpeed, forKey: ThemeKey.waterSpeed) }
+    }
+    @Published var waterIntensity: Double {
+        didSet { UserDefaults.standard.set(waterIntensity, forKey: ThemeKey.waterIntensity) }
+    }
+
+    // ── Published appearance / selected themes ────────────────────────────────
+
+    @Published var appearanceMode: AppearanceMode {
+        didSet { UserDefaults.standard.set(appearanceMode.rawValue, forKey: ThemeKey.appearanceMode) }
+    }
+    @Published var selectedDarkTheme: AppTheme {
+        didSet { UserDefaults.standard.set(selectedDarkTheme.rawValue, forKey: ThemeKey.selectedDarkTheme) }
+    }
+    @Published var selectedLightTheme: AppTheme {
+        didSet { UserDefaults.standard.set(selectedLightTheme.rawValue, forKey: ThemeKey.selectedLightTheme) }
+    }
+
+    // Fixed — not user-configurable
+    let waterColor: Color = Color(hex: "#2A7FAA")
+
+    // ── Init: load from UserDefaults, fall back to Nord ───────────────────────
+
+    init() {
+        let ud = UserDefaults.standard
+        let nordPreset = AppTheme.nord.preset
+
+        // Restore colours (fall back to Nord defaults)
+        backgroundColor    = Self.loadColor(ud, key: ThemeKey.backgroundColor,    default: nordPreset.background)
+        textColor          = Self.loadColor(ud, key: ThemeKey.textColor,          default: nordPreset.text)
+        secondaryTextColor = Self.loadColor(ud, key: ThemeKey.secondaryTextColor, default: nordPreset.secondaryText)
+        accentColor        = Self.loadColor(ud, key: ThemeKey.accentColor,        default: nordPreset.accent)
+        tint               = Self.loadColor(ud, key: ThemeKey.tint,               default: nordPreset.tint)
+        gonioSidesColor    = Self.loadColor(ud, key: ThemeKey.gonioSidesColor,    default: nordPreset.gonioSides)
+        gonioMidsColor     = Self.loadColor(ud, key: ThemeKey.gonioMidsColor,     default: nordPreset.gonioMids)
+        playButtonColor    = Self.loadColor(ud, key: ThemeKey.playButtonColor,    default: nordPreset.playButton)
+
+        // Restore shader settings
+        useWaterShader  = ud.object(forKey: ThemeKey.useWaterShader) as? Bool   ?? nordPreset.useWaterShader
+        waterSpeed      = ud.object(forKey: ThemeKey.waterSpeed)     as? Double ?? nordPreset.waterSpeed
+        waterIntensity  = ud.object(forKey: ThemeKey.waterIntensity) as? Double ?? nordPreset.waterIntensity
+
+        // Restore appearance mode
+        if let raw = ud.string(forKey: ThemeKey.appearanceMode),
+           let mode = AppearanceMode(rawValue: raw) {
+            appearanceMode = mode
+        } else {
+            appearanceMode = .dark
+        }
+
+        // Restore selected themes
+        if let raw = ud.string(forKey: ThemeKey.selectedDarkTheme),
+           let theme = AppTheme(rawValue: raw) {
+            selectedDarkTheme = theme
+        } else {
+            selectedDarkTheme = .nord
+        }
+
+        if let raw = ud.string(forKey: ThemeKey.selectedLightTheme),
+           let theme = AppTheme(rawValue: raw) {
+            selectedLightTheme = theme
+        } else {
+            selectedLightTheme = .rosePineLight
+        }
+    }
+
+    // ── Public API ────────────────────────────────────────────────────────────
+
+    /// Apply a named theme preset and persist immediately.
+    func apply(_ appTheme: AppTheme) {
+        let p = appTheme.preset
+        backgroundColor    = p.background
+        textColor          = p.text
+        secondaryTextColor = p.secondaryText
+        accentColor        = p.accent
+        tint               = p.tint
+        gonioSidesColor    = p.gonioSides
+        gonioMidsColor     = p.gonioMids
+        playButtonColor    = p.playButton
+        useWaterShader     = p.useWaterShader
+        if p.useWaterShader {
+            waterSpeed     = p.waterSpeed
+            waterIntensity = p.waterIntensity
+        }
+        // Track which named theme is active
+        if AppTheme.darkThemes.contains(appTheme) {
+            selectedDarkTheme = appTheme
+        } else {
+            selectedLightTheme = appTheme
+        }
+    }
+
+    /// Apply whichever theme matches the current appearanceMode.
+    func applyActiveTheme() {
+        apply(appearanceMode == .dark ? selectedDarkTheme : selectedLightTheme)
+    }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    private func save(_ hex: String, for key: String) {
+        UserDefaults.standard.set(hex, forKey: key)
+    }
+
+    private static func loadColor(_ ud: UserDefaults, key: String, default fallback: Color) -> Color {
+        guard let hex = ud.string(forKey: key) else { return fallback }
+        return Color(hex: hex)
+    }
 }
 
 // MARK: - Settings View
@@ -559,30 +719,12 @@ class ThemeManager: ObservableObject {
 struct SettingsView: View {
     @EnvironmentObject var theme: ThemeManager
 
-    // Local state mirrors ThemeManager so changes can be observed in the preview
-    @State private var backgroundColor:    Color  = Color(hex: "#faf4ed")
-    @State private var textColor:          Color  = Color(hex: "#575279")
-    @State private var secondaryTextColor: Color  = Color(hex: "#9893a5")
-    @State private var accentColor:        Color  = Color(hex: "#c84b4b")
-    @State private var tintColor:          Color  = Color(hex: "#c84b4b")
-    @State private var gonioSidesColor:    Color  = Color(hex: "#d95555")
-    @State private var gonioMidsColor:     Color  = Color(hex: "#56949f")
-    @State private var playButtonColor:    Color  = Color(hex: "#575279")
-    @State private var useWaterShader:     Bool   = false
-    @State private var waterSpeed:         Double = 1.0
-    @State private var waterIntensity:     Double = 0.5
-
-    @State private var selectedDarkTheme:  AppTheme = .minimalDark
-    @State private var selectedLightTheme: AppTheme = .rosePineLight
-    @State private var appearanceMode:     AppearanceMode = .light
-    @State private var didInitialize = false
-
     var body: some View {
         ZStack {
-            if useWaterShader {
+            if theme.useWaterShader {
                 WaterShaderView()
             } else {
-                backgroundColor.ignoresSafeArea()
+                theme.backgroundColor.ignoresSafeArea()
             }
 
             ScrollView {
@@ -596,27 +738,6 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
-            .onAppear {
-                guard !didInitialize else { return }
-                loadFromTheme()
-                didInitialize = true
-            }
-            // Propagate local state → ThemeManager
-            .onChange(of: backgroundColor)    { _, v in theme.backgroundColor    = v }
-            .onChange(of: textColor)          { _, v in theme.textColor          = v }
-            .onChange(of: secondaryTextColor) { _, v in theme.secondaryTextColor = v }
-            .onChange(of: accentColor)        { _, v in theme.accentColor        = v }
-            .onChange(of: tintColor)          { _, v in theme.tint               = v }
-            .onChange(of: gonioSidesColor)    { _, v in theme.gonioSidesColor    = v }
-            .onChange(of: gonioMidsColor)     { _, v in theme.gonioMidsColor     = v }
-            .onChange(of: playButtonColor)    { _, v in theme.playButtonColor    = v }
-            .onChange(of: useWaterShader)     { _, v in theme.useWaterShader     = v }
-            .onChange(of: waterSpeed)         { _, v in theme.waterSpeed         = v }
-            .onChange(of: waterIntensity)     { _, v in theme.waterIntensity     = v }
-            .onChange(of: appearanceMode)     { _, v in
-                theme.appearanceMode = v
-                applyActiveTheme()
-            }
         }
     }
 
@@ -626,28 +747,28 @@ struct SettingsView: View {
         VStack(spacing: 14) {
             Text("Preview")
                 .font(.headline)
-                .foregroundStyle(textColor)
+                .foregroundStyle(theme.textColor)
 
             HStack(spacing: 12) {
-                previewSwatch("Background",  backgroundColor)
-                previewSwatch("Text",        textColor)
-                previewSwatch("Secondary",   secondaryTextColor)
-                previewSwatch("Accent",      accentColor)
+                previewSwatch("Background",  theme.backgroundColor)
+                previewSwatch("Text",        theme.textColor)
+                previewSwatch("Secondary",   theme.secondaryTextColor)
+                previewSwatch("Accent",      theme.accentColor)
             }
             HStack(spacing: 12) {
-                previewSwatch("Tint",        tintColor)
-                previewSwatch("Sides",       gonioSidesColor)
-                previewSwatch("Mids",        gonioMidsColor)
-                previewSwatch("Play",        playButtonColor)
+                previewSwatch("Tint",        theme.tint)
+                previewSwatch("Sides",       theme.gonioSidesColor)
+                previewSwatch("Mids",        theme.gonioMidsColor)
+                previewSwatch("Play",        theme.playButtonColor)
             }
         }
         .padding()
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(backgroundColor.opacity(0.35))
+                .fill(theme.backgroundColor.opacity(0.35))
                 .overlay(
                     RoundedRectangle(cornerRadius: 16)
-                        .strokeBorder(textColor.opacity(0.08), lineWidth: 1)
+                        .strokeBorder(theme.textColor.opacity(0.08), lineWidth: 1)
                 )
         )
         .padding(.horizontal)
@@ -660,7 +781,7 @@ struct SettingsView: View {
                 .frame(height: 36)
             Text(label)
                 .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(textColor.opacity(0.6))
+                .foregroundStyle(theme.textColor.opacity(0.6))
         }
         .frame(maxWidth: .infinity)
     }
@@ -671,67 +792,55 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Colour Scheme")
                 .font(.headline)
-                .foregroundStyle(textColor)
+                .foregroundStyle(theme.textColor)
                 .padding(.horizontal)
 
             // Light / Dark toggle
             VStack(alignment: .leading, spacing: 6) {
                 Text("Appearance")
                     .font(.subheadline)
-                    .foregroundStyle(textColor.opacity(0.7))
+                    .foregroundStyle(theme.textColor.opacity(0.7))
                     .padding(.horizontal)
 
-                Picker("Appearance", selection: $appearanceMode) {
+                Picker("Appearance", selection: $theme.appearanceMode) {
                     ForEach(AppearanceMode.allCases, id: \.self) { mode in
                         Text(mode.rawValue).tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
+                .onChange(of: theme.appearanceMode) { _, _ in
+                    theme.applyActiveTheme()
+                }
             }
 
             // Show only the relevant dropdown
             VStack(spacing: 12) {
-                if appearanceMode == .dark {
+                if theme.appearanceMode == .dark {
                     themeDropdown(
                         label: "Dark Theme",
-                        selected: selectedDarkTheme,
+                        selected: theme.selectedDarkTheme,
                         options: AppTheme.darkThemes,
-                        onSelect: { picked in
-                            selectedDarkTheme = picked
-                            applyTheme(picked)
-                        }
+                        onSelect: { theme.apply($0) }
                     )
                 } else {
                     themeDropdown(
                         label: "Light Theme",
-                        selected: selectedLightTheme,
+                        selected: theme.selectedLightTheme,
                         options: AppTheme.lightThemes,
-                        onSelect: { picked in
-                            selectedLightTheme = picked
-                            applyTheme(picked)
-                        }
+                        onSelect: { theme.apply($0) }
                     )
                 }
             }
             .padding(.horizontal)
-            .animation(.easeInOut(duration: 0.15), value: appearanceMode)
+            .animation(.easeInOut(duration: 0.15), value: theme.appearanceMode)
         }
         .padding(.vertical, 16)
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(backgroundColor.opacity(0.2))
+                .fill(theme.backgroundColor.opacity(0.2))
         )
         .padding(.horizontal)
-    }
-
-    /// Whether dark colours should currently be active
-    private var isUsingDark: Bool {
-        appearanceMode == .dark
-    }
-
-    private func applyActiveTheme() {
-        applyTheme(isUsingDark ? selectedDarkTheme : selectedLightTheme)
     }
 
     private func themeDropdown(
@@ -743,7 +852,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label)
                 .font(.subheadline)
-                .foregroundStyle(textColor.opacity(0.7))
+                .foregroundStyle(theme.textColor.opacity(0.7))
 
             Menu {
                 ForEach(options) { option in
@@ -758,27 +867,27 @@ struct SettingsView: View {
                         .fill(selected.preset.background)
                         .frame(width: 14, height: 14)
                         .overlay(
-                            Circle().strokeBorder(textColor.opacity(0.2), lineWidth: 1)
+                            Circle().strokeBorder(theme.textColor.opacity(0.2), lineWidth: 1)
                         )
 
                     Text(selected.rawValue)
                         .font(.body)
-                        .foregroundStyle(textColor)
+                        .foregroundStyle(theme.textColor)
 
                     Spacer()
 
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.caption)
-                        .foregroundStyle(textColor.opacity(0.5))
+                        .foregroundStyle(theme.textColor.opacity(0.5))
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(
                     RoundedRectangle(cornerRadius: 10)
-                        .fill(backgroundColor.opacity(0.4))
+                        .fill(theme.backgroundColor.opacity(0.4))
                         .overlay(
                             RoundedRectangle(cornerRadius: 10)
-                                .strokeBorder(textColor.opacity(0.12), lineWidth: 1)
+                                .strokeBorder(theme.textColor.opacity(0.12), lineWidth: 1)
                         )
                 )
             }
@@ -793,30 +902,30 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Water Effect")
                         .font(.headline)
-                        .foregroundStyle(textColor)
+                        .foregroundStyle(theme.textColor)
                     Text("Uses the current background colour")
                         .font(.caption)
-                        .foregroundStyle(textColor.opacity(0.5))
+                        .foregroundStyle(theme.textColor.opacity(0.5))
                 }
 
                 Spacer()
 
-                Toggle("", isOn: $useWaterShader)
-                    .tint(accentColor)
+                Toggle("", isOn: $theme.useWaterShader)
+                    .tint(theme.accentColor)
                     .labelsHidden()
             }
 
-            if useWaterShader {
+            if theme.useWaterShader {
                 VStack(spacing: 14) {
                     sliderRow(
                         label: "Speed",
-                        value: $waterSpeed,
+                        value: $theme.waterSpeed,
                         range: 0.1...3.0,
                         format: "%.1fx"
                     )
                     sliderRow(
                         label: "Intensity",
-                        value: $waterIntensity,
+                        value: $theme.waterIntensity,
                         range: 0.1...2.0,
                         format: "%.1f"
                     )
@@ -827,10 +936,10 @@ struct SettingsView: View {
         .padding()
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(backgroundColor.opacity(0.2))
+                .fill(theme.backgroundColor.opacity(0.2))
         )
         .padding(.horizontal)
-        .animation(.easeInOut(duration: 0.2), value: useWaterShader)
+        .animation(.easeInOut(duration: 0.2), value: theme.useWaterShader)
     }
 
     private func sliderRow(
@@ -843,48 +952,15 @@ struct SettingsView: View {
             HStack {
                 Text(label)
                     .font(.subheadline)
-                    .foregroundStyle(textColor)
+                    .foregroundStyle(theme.textColor)
                 Spacer()
                 Text(String(format: format, value.wrappedValue))
                     .font(.subheadline.monospacedDigit())
-                    .foregroundStyle(textColor.opacity(0.6))
+                    .foregroundStyle(theme.textColor.opacity(0.6))
             }
             Slider(value: value, in: range)
-                .tint(accentColor)
+                .tint(theme.accentColor)
         }
     }
 
-    // MARK: - Helpers
-
-    private func loadFromTheme() {
-        backgroundColor    = theme.backgroundColor
-        textColor          = theme.textColor
-        secondaryTextColor = theme.secondaryTextColor
-        accentColor        = theme.accentColor
-        tintColor          = theme.tint
-        gonioSidesColor    = theme.gonioSidesColor
-        gonioMidsColor     = theme.gonioMidsColor
-        playButtonColor    = theme.playButtonColor
-        useWaterShader     = theme.useWaterShader
-        waterSpeed         = theme.waterSpeed
-        waterIntensity     = theme.waterIntensity
-        appearanceMode     = theme.appearanceMode
-    }
-
-    private func applyTheme(_ appTheme: AppTheme) {
-        let p = appTheme.preset
-        backgroundColor    = p.background
-        textColor          = p.text
-        secondaryTextColor = p.secondaryText
-        accentColor        = p.accent
-        tintColor          = p.tint
-        gonioSidesColor    = p.gonioSides
-        gonioMidsColor     = p.gonioMids
-        playButtonColor    = p.playButton
-        useWaterShader     = p.useWaterShader
-        if p.useWaterShader {
-            waterSpeed     = p.waterSpeed
-            waterIntensity = p.waterIntensity
-        }
-    }
 }
