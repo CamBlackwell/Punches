@@ -30,11 +30,7 @@ struct AudioPlayerView: View {
         .navigationBarTitleDisplayMode(.inline)
         .navigationTitle(currentFile.title)
         .preferredColorScheme(.dark)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                visualisationSelector
-            }
-        }
+
         .onChange(of: audioManager.currentlyPlayingID) { _, newID in
             if let newID = newID, newID != currentFile.id {
                 sliderValue = 0
@@ -46,34 +42,6 @@ struct AudioPlayerView: View {
         audioManager.audioFiles.first(where: {
             $0.id == audioManager.currentlyPlayingID
         }) ?? audioFile
-    }
-
-    private var visualisationSelector: some View {
-        Menu {
-            ForEach(VisualisationMode.allCases, id: \.self) { mode in
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.3)) {
-                        audioManager.visualisationMode = mode
-                        audioManager.saveVisualisationMode()
-                    }
-                }) {
-                    HStack {
-                        Label(mode.rawValue, systemImage: mode.icon)
-                        Spacer()
-                        if audioManager.visualisationMode == mode {
-                            Image(systemName: "checkmark")
-                        }
-                    }
-                }
-            }
-        } label: {
-            HStack {
-                Image(systemName: audioManager.visualisationMode.icon)
-                    .font(.subheadline)
-                    .tint(theme.textColor)
-            }
-            .padding()
-        }
     }
 
     @ViewBuilder

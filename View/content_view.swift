@@ -271,19 +271,79 @@ struct ContentView: View {
     
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .navigationBarLeading) {
-            leadingToolbarButton
+        ToolbarItemGroup(placement: .navigationBarLeading) {
+            if libraryFilter == .player {
+                Button {
+                    withAnimation { libraryFilter = .songs }
+                } label: {
+                    Image(systemName: "chevron.backward").font(.title2)
+                }
+                .tint(theme.accentColor)
+            } else if !isReorderMode && !isMultiSelectMode {
+                Button {
+                    isMultiSelectMode = true
+                    selectedFileIDs.removeAll()
+                } label: {
+                    Image(systemName: "checkmark.circle").font(.title2)
+                }
+                .tint(theme.accentColor)
+            } else if isMultiSelectMode {
+                Button {
+                    if selectedFileIDs.count == audioManager.displayedSongs.count {
+                        selectedFileIDs.removeAll()
+                    } else {
+                        selectedFileIDs = Set(audioManager.displayedSongs.map { $0.id })
+                    }
+                } label: {
+                    Text("All")
+                }
+                .tint(theme.accentColor)
+            }
         }
-        
+
         ToolbarItem(placement: .principal) {
-            if !(libraryFilter == .player) {
+            if libraryFilter != .player {
                 searchBar
             }
         }
 
-
-        ToolbarItem(placement: .navigationBarTrailing) {
-            trailingToolbarButton
+        ToolbarItemGroup(placement: .navigationBarTrailing) {
+            if isReorderMode {
+                Button("Done") { isReorderMode = false }
+                    .tint(theme.accentColor)
+            } else if isMultiSelectMode {
+                Button("Done") {
+                    isMultiSelectMode = false
+                    selectedFileIDs.removeAll()
+                }
+                .tint(theme.accentColor)
+            } else if libraryFilter == .player {
+                ForEach(VisualisationMode.allCases, id: \.self) { mode in
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            audioManager.visualisationMode = mode
+                            audioManager.saveVisualisationMode()
+                        }
+                    } label: {
+                        Image(systemName: mode.icon)
+                            .foregroundStyle(
+                                audioManager.visualisationMode == mode
+                                    ? theme.accentColor
+                                    : theme.secondaryTextColor
+                            )
+                    }
+                }
+            } else {
+                Button { showingFilePicker = true } label: {
+                    Label("Add Songs", systemImage: "music.note")
+                }
+                Button { showingCreatePlaylistAlert = true } label: {
+                    Label("Create Playlist", systemImage: "music.note.list")
+                }
+                Button { showingSettings = true } label: {
+                    Label("Settings", systemImage: "gear")
+                }
+            }
         }
     }
     
@@ -305,100 +365,13 @@ struct ContentView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                //.padding(.horizontal, 12)
+                //.padding(.vertical, 8)
+                .padding(8)
             }
             .glassEffect()
-            .frame(width: 260, height: 36)
-            .contentShape(Rectangle())
             .onTapGesture { isSearchFocused = true }
         }
-
-    private var leadingToolbarButton: some View {
-        Group {
-            if libraryFilter == .player {
-                Button {
-                    withAnimation {
-                        libraryFilter = .songs
-                    }
-                } label: {
-                    Image(systemName: "chevron.backward")
-                        .font(.title2)
-                }
-                .tint(theme.accentColor)
-            } else {
-                if !isReorderMode && !isMultiSelectMode {
-                    Button {
-                        isMultiSelectMode = true
-                        selectedFileIDs.removeAll()
-                    } label: {
-                        Image(systemName: "checkmark.circle")
-                            .font(.title2)
-                    }
-                    .tint(theme.accentColor)
-                } else if isMultiSelectMode {
-                    Button {
-                        if selectedFileIDs.count == audioManager.displayedSongs.count {
-                            selectedFileIDs.removeAll()
-                        } else {
-                            selectedFileIDs = Set(audioManager.displayedSongs.map { $0.id })
-                        }
-                    } label: {
-                        Text("All")
-                    }
-                    .tint(theme.accentColor)
-                }
-            }
-        }
-    }
-
-    
-    private var trailingToolbarButton: some View {
-        Group {
-            if libraryFilter == .player {
-
-            } else if isReorderMode {
-                Button {
-                    isReorderMode = false
-                } label: {
-                    Text("Done")
-                }
-                .tint(theme.accentColor)
-
-            } else if isMultiSelectMode {
-                Button {
-                    isMultiSelectMode = false
-                    selectedFileIDs.removeAll()
-                } label: {
-                    Text("Done")
-                }
-                .tint(theme.accentColor)
-
-            } else {
-                Menu {
-                    Button {
-                        showingFilePicker = true
-                    } label: {
-                        Label("Add Songs", systemImage: "music.note")
-                    }
-                    Button {
-                        showingCreatePlaylistAlert = true
-                    } label: {
-                        Label("Create playlist", systemImage: "music.note.list")
-                    }
-                    Button {
-                        showingSettings = true
-                    } label: {
-                        Label("Settings", systemImage: "gear")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.title2)
-                }
-                .tint(theme.accentColor)
-            }
-        }
-    }
 
 
 
