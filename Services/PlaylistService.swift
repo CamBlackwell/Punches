@@ -116,7 +116,16 @@ final class PlaylistService {
     func createPlaylist(name: String) {
         let newPlaylist = Playlist(name: name)
         manager.playlists.append(newPlaylist)
-        savePlaylists()
+        let playlists = manager.playlists
+        Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            do {
+                let data = try JSONEncoder().encode(playlists)
+                UserDefaults.standard.set(data, forKey: self.manager.playlistsKey)
+            } catch {
+                print("failed to save playlists \(error.localizedDescription)")
+            }
+        }
     }
 
     func deletePlaylist(_ playlist: Playlist) {

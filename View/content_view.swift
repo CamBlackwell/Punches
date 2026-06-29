@@ -32,17 +32,19 @@ struct ContentView: View {
     @State private var isScrolledDown = false
     @Namespace private var barNamespace
 
-    #if DEBUG
-    @State private var showDebugHUD = false
-    #endif
+
     
     
     
     var body: some View {
         NavigationStack {
             ZStack(alignment: .bottom) {
-                theme.backgroundColor
-                    .ignoresSafeArea()
+                if theme.useWaterShader {
+                    WaterShaderView()
+                } else {
+                    theme.backgroundColor
+                        .ignoresSafeArea()
+                }
 
                 TabView(selection: $libraryFilter) {
                     playlistsPage
@@ -55,6 +57,7 @@ struct ContentView: View {
                         .tag(LibraryFilter.player)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
+                .background(Color.clear)
                 .onChange(of: libraryFilter) { _, _ in
                     tabCircleButtonPressed = false
                 }
@@ -106,27 +109,6 @@ struct ContentView: View {
             preloadViews()
             preloadContextMenu()
         }
-        #if DEBUG
-        .overlay(alignment: .topTrailing) {
-            VStack(alignment: .trailing, spacing: 6) {
-                Button(action: { withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { showDebugHUD.toggle() } }) {
-                    Image(systemName: showDebugHUD ? "eye.slash" : "eye")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(8)
-                        .background(Color.black.opacity(0.55))
-                        .clipShape(Circle())
-                        .overlay(Circle().stroke(Color.white.opacity(0.2), lineWidth: 1))
-                }
-                if showDebugHUD {
-                    AudioHealthHUD(manager: audioManager)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
-            }
-            .padding(.top, 8)
-            .padding(.trailing, 8)
-        }
-        #endif
     }
 
     
@@ -830,7 +812,7 @@ struct SongsListView: View {
                     showingBatchPlaylistMenu: $showingBatchPlaylistMenu,
                     showingBatchDeleteAlert: $showingBatchDeleteAlert
                 )
-                .listRowBackground(theme.backgroundColor)
+                .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
 
             }
@@ -856,7 +838,7 @@ struct SongsListView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(theme.backgroundColor)
+        .background(Color.clear)
         .mask(
             LinearGradient(
                 stops: [
@@ -979,7 +961,7 @@ struct PlaylistsListView: View {
                         audioManager: audioManager
                     )
                 }
-                .listRowBackground(theme.backgroundColor)
+                .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .contextMenu {
                     Button(
@@ -1014,7 +996,7 @@ struct PlaylistsListView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(theme.backgroundColor)
+        .background(Color.clear)
         .mask(
             LinearGradient(
                 stops: [
@@ -1317,7 +1299,7 @@ struct AudioFileButton: View {
             )
         }
         .buttonStyle(PlainButtonStyle())
-        .background(theme.backgroundColor)
+        .background(Color.clear)
         .contextMenu {
             if !isReorderMode {
                 if isMultiSelectMode && selectedFileIDs.contains(audioFile.id) {

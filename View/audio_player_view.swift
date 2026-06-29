@@ -12,8 +12,7 @@ struct AudioPlayerView: View {
 
     var body: some View {
         ZStack {
-            theme.backgroundColor
-                .ignoresSafeArea()
+            Color.clear
 
             VStack(spacing: 8) {
                 visualisationView

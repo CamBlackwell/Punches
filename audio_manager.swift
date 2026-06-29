@@ -138,7 +138,9 @@ class AudioManager: NSObject, ObservableObject {
     }
 
     func createPlaylist(name: String) {
-        playlistService.createPlaylist(name: name)
+        DispatchQueue.main.async { [weak self] in
+            self?.playlistService.createPlaylist(name: name)
+        }
     }
 
     func deletePlaylist(_ playlist: Playlist) {

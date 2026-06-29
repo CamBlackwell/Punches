@@ -98,7 +98,7 @@ struct PlaylistDetailView: View {
                 )
             }
         }
-        .background(Color(theme.backgroundColor))
+        .background(Color(Color.clear))
         .navigationTitle(playlist.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

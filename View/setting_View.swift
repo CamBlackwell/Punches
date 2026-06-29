@@ -10,6 +10,10 @@ struct ThemePreset {
     var gonioSides: Color
     var gonioMids: Color
     var playButton: Color
+    var useWaterShader: Bool
+    var waterColor: Color
+    var waterSpeed: Double
+    var waterIntensity: Double
     
     static let empty = ThemePreset(
         background: .black,
@@ -19,7 +23,11 @@ struct ThemePreset {
         tint: .blue,
         gonioSides: .red,
         gonioMids: .purple,
-        playButton: .white
+        playButton: .white,
+        useWaterShader: false,
+        waterColor: .blue,
+        waterSpeed: 1.0,
+        waterIntensity: 0.5
     )
 }
 
@@ -32,6 +40,10 @@ class ThemeManager: ObservableObject {
     @Published var gonioSidesColor = Color.red
     @Published var gonioMidsColor = Color.purple
     @Published var playButtonColor = Color.white
+    @Published var useWaterShader: Bool = false
+    @Published var waterColor: Color = .blue
+    @Published var waterSpeed: Double = 1.0
+    @Published var waterIntensity: Double = 0.5
     
     @Published var customPresets: [ThemePreset] = [
         ThemePreset.empty,
@@ -52,6 +64,10 @@ struct SettingsView: View {
     @State private var gonioMidsColor: Color = Color.purple
     @State private var playButtonColor: Color = Color.white
     @State private var didInitializeFromTheme = false
+    @State private var useWaterShader: Bool = false
+    @State private var waterShaderColor: Color = Color.blue
+    @State private var waterSpeed: Double = 1.0
+    @State private var waterIntensity: Double = 0.5
     
     @State private var showingAssignDialog = false
     
@@ -100,6 +116,29 @@ struct SettingsView: View {
                             ]
                         )
                         
+                        VStack(alignment: .leading, spacing: 12) {
+                            Toggle("Water Shader", isOn: $useWaterShader)
+                                .foregroundStyle(textColor)
+                                .tint(accentColor)
+
+                            ColorPicker("Water Color", selection: $waterShaderColor)
+                                .foregroundStyle(textColor)
+
+                            Text("Speed: \(waterSpeed, specifier: "%.1f")x")
+                                .foregroundStyle(textColor)
+                            Slider(value: $waterSpeed, in: 0.1...3.0)
+                                .tint(accentColor)
+
+                            Text("Intensity: \(waterIntensity, specifier: "%.1f")")
+                                .foregroundStyle(textColor)
+                            Slider(value: $waterIntensity, in: 0.1...2.0)
+                                .tint(accentColor)
+                        }
+                        .padding()
+                        .background(backgroundColor.opacity(0.2))
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+
+                        
                         Button("Assign Current Theme to…") {
                             showingAssignDialog = true
                         }
@@ -135,6 +174,10 @@ struct SettingsView: View {
             .onChange(of: gonioSidesColor) { _, v in theme.gonioSidesColor = v }
             .onChange(of: gonioMidsColor) { _, v in theme.gonioMidsColor = v }
             .onChange(of: playButtonColor) { _, v in theme.playButtonColor = v }
+            .onChange(of: useWaterShader) { _, v in theme.useWaterShader = v }
+            .onChange(of: waterShaderColor) { _, v in theme.waterColor = v }
+            .onChange(of: waterSpeed) { _, v in theme.waterSpeed = v }
+            .onChange(of: waterIntensity) { _, v in theme.waterIntensity = v }
         }
     }
     
@@ -147,6 +190,10 @@ struct SettingsView: View {
         gonioSidesColor = theme.gonioSidesColor
         gonioMidsColor = theme.gonioMidsColor
         playButtonColor = theme.playButtonColor
+        useWaterShader = theme.useWaterShader
+        waterShaderColor = theme.waterColor
+        waterSpeed = theme.waterSpeed
+        waterIntensity = theme.waterIntensity
     }
     
     private var themePreview: some View {
@@ -217,6 +264,7 @@ struct SettingsView: View {
                     presetButton("Grey") { applyGreyTheme() }
                     presetButton("Brown") { applyBrownTheme() }
                     presetButton("Green") { applyGreenTheme() }
+                    presetButton("Water") { applyWaterTheme() }
                     presetButton("Purple") { applyPurpleTheme() }
                     presetButton("Yellow") { applyYellowTheme() }
                     presetButton("Pink") { applyPinkTheme() }
@@ -255,7 +303,11 @@ struct SettingsView: View {
             tint: tintColor,
             gonioSides: gonioSidesColor,
             gonioMids: gonioMidsColor,
-            playButton: playButtonColor
+            playButton: playButtonColor,
+            useWaterShader: useWaterShader,
+            waterColor: waterShaderColor,
+            waterSpeed: waterSpeed,
+            waterIntensity: waterIntensity
         )
     }
     
@@ -269,6 +321,10 @@ struct SettingsView: View {
         gonioSidesColor = p.gonioSides
         gonioMidsColor = p.gonioMids
         playButtonColor = p.playButton
+        useWaterShader = p.useWaterShader
+        waterShaderColor = p.waterColor
+        waterSpeed = p.waterSpeed
+        waterIntensity = p.waterIntensity
     }
     
     private func applyDefaultTheme() {
@@ -346,6 +402,21 @@ struct SettingsView: View {
         gonioSidesColor = .pink
         gonioMidsColor = .purple
         playButtonColor = .white
+    }
+    
+    private func applyWaterTheme() {
+        backgroundColor = Color(red: 0.02, green: 0.08, blue: 0.18)
+        textColor = .white
+        secondaryTextColor = .cyan.opacity(0.7)
+        accentColor = .cyan
+        tintColor = .cyan
+        gonioSidesColor = .blue
+        gonioMidsColor = .cyan
+        playButtonColor = .white
+        useWaterShader = true
+        waterShaderColor = .blue
+        waterSpeed = 1.0
+        waterIntensity = 0.8
     }
     
     private func applyYellowTheme() {

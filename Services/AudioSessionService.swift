@@ -9,6 +9,9 @@ final class AudioSessionService {
     init(manager: AudioManager) {
         self.manager = manager
     }
+    
+    private var cachedArtwork: MPMediaItemArtwork?
+    private var cachedArtworkID: UUID?
 
     func setupAudioSession() {
         do {
@@ -131,7 +134,12 @@ final class AudioSessionService {
                   let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else { return }
 
             if reason == .oldDeviceUnavailable {
-                    self.manager.togglePlayPause()
+                if self.manager.isPlaying {
+                    self.manager.currentEngine?.pause()
+                    self.manager.isPlaying = false
+                    self.manager.playbackService.stopTimer()
+                    self.manager.sessionService.updateNowPlayingInfo()
+                }
             }
         }
         manager.observerTokens.append(token)
@@ -177,12 +185,17 @@ final class AudioSessionService {
         nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = manager.currentTime
         nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = manager.isPlaying ? 1.0 : 0.0
 
-        if let artworkName = currentFile.artworkImageName,
-           let artworkImage = manager.artworkService.loadArtworkImage(artworkName) {
-            let artwork = MPMediaItemArtwork(boundsSize: artworkImage.size) { _ in
-                artworkImage
+        if cachedArtworkID != currentFile.id {
+            cachedArtworkID = currentFile.id
+            if let artworkName = currentFile.artworkImageName,
+               let artworkImage = manager.artworkService.loadArtworkImage(artworkName) {
+                cachedArtwork = MPMediaItemArtwork(boundsSize: artworkImage.size) { _ in artworkImage }
+            } else {
+                cachedArtwork = nil
             }
-            nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
+        }
+        if let cachedArtwork {
+            nowPlayingInfo[MPMediaItemPropertyArtwork] = cachedArtwork
         }
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
