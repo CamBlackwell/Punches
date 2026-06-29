@@ -16,7 +16,6 @@
 		CB7BBD2E2F7650220051E29E /* silly_speed.code-workspace in Resources */ = {isa = PBXBuildFile; fileRef = CB7BBD2D2F7650220051E29E /* silly_speed.code-workspace */; };
 		CB7BBD302F76502A0051E29E /* silly_speed.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB7BBD2F2F76502A0051E29E /* silly_speed.swift */; };
 		CB7BBD762F7652110051E29E /* AudioKit in Frameworks */ = {isa = PBXBuildFile; productRef = CB7BBD752F7652110051E29E /* AudioKit */; };
-		CBB46E342FF20F880003B212 /* agent.md in Resources */ = {isa = PBXBuildFile; fileRef = CBB46E332FF20F880003B212 /* agent.md */; };
 		CBB46E362FF2198D0003B212 /* AudioHealthHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBB46E352FF2198D0003B212 /* AudioHealthHUD.swift */; };
 /* End PBXBuildFile section */
 
@@ -50,8 +49,8 @@
 		CB7BBD2C2F76501D0051E29E /* silly_speed_ios.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = silly_speed_ios.entitlements; sourceTree = "<group>"; };
 		CB7BBD2D2F7650220051E29E /* silly_speed.code-workspace */ = {isa = PBXFileReference; lastKnownFileType = text; path = "silly_speed.code-workspace"; sourceTree = "<group>"; };
 		CB7BBD2F2F76502A0051E29E /* silly_speed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = silly_speed.swift; sourceTree = "<group>"; };
-		CBB46E332FF20F880003B212 /* agent.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = agent.md; sourceTree = "<group>"; };
 		CBB46E352FF2198D0003B212 /* AudioHealthHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioHealthHUD.swift; sourceTree = "<group>"; };
+		CBB46EA52FF291440003B212 /* Punches3-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = "Punches3-Info.plist"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -209,6 +208,7 @@
 		CB7BBCB32F764F220051E29E = {
 			isa = PBXGroup;
 			children = (
+				CBB46EA52FF291440003B212 /* Punches3-Info.plist */,
 				CB7BBCBD2F764F220051E29E /* Products */,
 				CB7BBD342F7650E30051E29E /* AudioEngines */,
 				CB7BBD3C2F7650E30051E29E /* AudioMeters */,
@@ -225,7 +225,6 @@
 				CB7BBD2D2F7650220051E29E /* silly_speed.code-workspace */,
 				CB7BBD2F2F76502A0051E29E /* silly_speed.swift */,
 				CB7BBD2C2F76501D0051E29E /* silly_speed_ios.entitlements */,
-				CBB46E332FF20F880003B212 /* agent.md */,
 				CBB46E352FF2198D0003B212 /* AudioHealthHUD.swift */,
 			);
 			sourceTree = "<group>";
@@ -360,7 +359,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				CB7BBD2E2F7650220051E29E /* silly_speed.code-workspace in Resources */,
-				CBB46E342FF20F880003B212 /* agent.md in Resources */,
 				CB7BBCC42F764F250051E29E /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -557,12 +555,12 @@
 				DEVELOPMENT_TEAM = U6Q4B5CXQX;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Punches3-Info.plist";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -571,12 +569,16 @@
 				PRODUCT_BUNDLE_IDENTIFIER = Cam.Punches3;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -590,12 +592,12 @@
 				DEVELOPMENT_TEAM = U6Q4B5CXQX;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Punches3-Info.plist";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -604,12 +606,16 @@
 				PRODUCT_BUNDLE_IDENTIFIER = Cam.Punches3;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};

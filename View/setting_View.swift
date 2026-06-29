@@ -404,7 +404,7 @@ enum AppTheme: String, CaseIterable, Identifiable {
             return ThemePreset(
                 background:    Color(hex: "#fffcf0"),
                 text:          Color(hex: "#100f0f"),
-                secondaryText: Color(hex: "#b7b5ac"),
+                secondaryText: Color(hex: "#ad8301"),
                 accent:        Color(hex: "#ad8301"),
                 tint:          Color(hex: "#ad8301"),
                 gonioSides:    Color(hex: "#af3029"),
@@ -418,7 +418,7 @@ enum AppTheme: String, CaseIterable, Identifiable {
             return ThemePreset(
                 background:    Color(hex: "#fbf1c7"),
                 text:          Color(hex: "#3c3836"),
-                secondaryText: Color(hex: "#928374"),
+                secondaryText: Color(hex: "#b57614"),
                 accent:        Color(hex: "#b57614"),
                 tint:          Color(hex: "#b57614"),
                 gonioSides:    Color(hex: "#9d0006"),
@@ -432,7 +432,7 @@ enum AppTheme: String, CaseIterable, Identifiable {
             return ThemePreset(
                 background:    Color(hex: "#f5f5f5"),
                 text:          Color(hex: "#1c1c1e"),
-                secondaryText: Color(hex: "#8e8e93"),
+                secondaryText: Color(hex: "#007aff"),
                 accent:        Color(hex: "#007aff"),
                 tint:          Color(hex: "#007aff"),
                 gonioSides:    Color(hex: "#ff3b30"),
@@ -446,7 +446,7 @@ enum AppTheme: String, CaseIterable, Identifiable {
             return ThemePreset(
                 background:    Color(hex: "#eceff4"),
                 text:          Color(hex: "#2e3440"),
-                secondaryText: Color(hex: "#9099a8"),
+                secondaryText: Color(hex: "#5e81ac"),
                 accent:        Color(hex: "#5e81ac"),
                 tint:          Color(hex: "#5e81ac"),
                 gonioSides:    Color(hex: "#bf616a"),
@@ -460,7 +460,7 @@ enum AppTheme: String, CaseIterable, Identifiable {
             return ThemePreset(
                 background:    Color(hex: "#faf4ed"),
                 text:          Color(hex: "#575279"),
-                secondaryText: Color(hex: "#9893a5"),
+                secondaryText: Color(hex: "#c84b4b"),
                 accent:        Color(hex: "#c84b4b"),
                 tint:          Color(hex: "#c84b4b"),
                 gonioSides:    Color(hex: "#d95555"),
@@ -474,7 +474,7 @@ enum AppTheme: String, CaseIterable, Identifiable {
             return ThemePreset(
                 background:    Color(hex: "#cdd9e5"),
                 text:          Color(hex: "#1b2433"),
-                secondaryText: Color(hex: "#768390"),
+                secondaryText: Color(hex: "#0969da"),
                 accent:        Color(hex: "#0969da"),
                 tint:          Color(hex: "#0969da"),
                 gonioSides:    Color(hex: "#cf222e"),
@@ -488,7 +488,7 @@ enum AppTheme: String, CaseIterable, Identifiable {
             return ThemePreset(
                 background:    Color(hex: "#fdf6e3"),
                 text:          Color(hex: "#657b83"),
-                secondaryText: Color(hex: "#93a1a1"),
+                secondaryText: Color(hex: "#268bd2"),
                 accent:        Color(hex: "#268bd2"),
                 tint:          Color(hex: "#268bd2"),
                 gonioSides:    Color(hex: "#dc322f"),
@@ -502,7 +502,7 @@ enum AppTheme: String, CaseIterable, Identifiable {
             return ThemePreset(
                 background:    Color(hex: "#f2f2f7"),
                 text:          Color(hex: "#1c1c1e"),
-                secondaryText: Color(hex: "#8e8e93"),
+                secondaryText: Color(hex: "#4f8ef7"),
                 accent:        Color(hex: "#4f8ef7"),
                 tint:          Color(hex: "#4f8ef7"),
                 gonioSides:    Color(hex: "#ff6b6b"),

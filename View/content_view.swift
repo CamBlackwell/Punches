@@ -1040,8 +1040,7 @@ struct MiniPlayerBar: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(audioFile.title)
-                                .font(.subheadline)
-                                .fontWeight(.semibold)
+                                .font(.custom("FontName", size: 18, relativeTo: .body))
                                 .lineLimit(1)
                                 .foregroundStyle(theme.textColor)
 
@@ -1452,7 +1451,7 @@ struct AudioFileRow: View {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: 35, height: 35)
+                    .frame(width: 45, height: 45)
                     .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(
@@ -1471,21 +1470,18 @@ struct AudioFileRow: View {
                         ? theme.accentColor : theme.secondaryTextColor
                 )
                 .font(.title2)
-                .frame(width: 35, height: 35)
+                .frame(width: 45, height: 45)
             }
-            VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: 4) {
                 Text(audioFile.title)
-                    .font(.headline)
+                    .font(.custom("HelveticaNeue-Bold", size: 18, relativeTo: .body))
                     .foregroundStyle(
                         isCurrentlyPlaying ? theme.accentColor : theme.textColor
                     )
                     .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
-                HStack {
-                    Text(audioFile.dateAdded, style: .date)
-                    Text(formatTime(audioFile.audioDuration))
-                }
+                Text(formatTime(audioFile.audioDuration))
                 .font(.caption).foregroundStyle(theme.secondaryTextColor)
                 .lineLimit(1)
             }

@@ -19,7 +19,7 @@ struct AudioPlayerView: View {
 
                 Spacer()
 
-                tempoControl
+                //tempoControl
                 pitchControl
                 timeSlider
                 playbackControls
