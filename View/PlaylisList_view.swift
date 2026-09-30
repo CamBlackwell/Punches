@@ -23,6 +23,19 @@ struct PlaylistDetailView: View {
     var playlistSongs: [AudioFile] {
         audioManager.getAudioFiles(for: playlist)
     }
+
+    /// Playlists and albums, minus this one. An album is a playlist, so leaving
+    /// it out of this list would make albums unreachable as batch-add targets.
+    private var transferTargets: [Playlist] {
+        audioManager.sortedPlaylists.filter { $0.id != playlist.id }
+            + audioManager.sortedAlbums.filter { $0.id != playlist.id }
+    }
+
+    /// The selection in playlist order. `selectedFileIDs` is a `Set`, so
+    /// iterating it directly would add songs in an arbitrary order.
+    private var selectedSongsInPlaylistOrder: [AudioFile] {
+        playlistSongs.filter { selectedFileIDs.contains($0.id) }
+    }
     
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -152,18 +165,16 @@ struct PlaylistDetailView: View {
             ShareSheet(activityItems: shareURLs)
         }
         .confirmationDialog("Add to Playlist", isPresented: $showingBatchPlaylistMenu) {
-            ForEach(audioManager.playlists.filter { $0.id != playlist.id }) { otherPlaylist in
+            ForEach(transferTargets) { otherPlaylist in
                 Button(otherPlaylist.name) {
-                    for fileID in selectedFileIDs {
-                        if let file = audioManager.audioFiles.first(where: { $0.id == fileID }) {
-                            audioManager.addAudioFile(file, to: otherPlaylist)
-                        }
+                    for file in selectedSongsInPlaylistOrder {
+                        audioManager.addAudioFile(file, to: otherPlaylist)
                     }
                 }
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Add \(selectedFileIDs.count) song(s) to another playlist")
+            Text("Add \(selectedFileIDs.count) song(s) to another playlist or album")
         }
         .alert("Delete Selected Files", isPresented: $showingBatchDeleteAlert) {
             Button("Cancel", role: .cancel) { }
@@ -215,6 +226,7 @@ struct PlaylistAudioFileButton: View {
     @Binding var showingBatchPlaylistMenu: Bool
     @Binding var showingBatchDeleteAlert: Bool
     @Binding var showingBatchRemoveAlert: Bool
+    var trackNumber: Int? = nil
 
     var body: some View {
         Button {
@@ -240,7 +252,8 @@ struct PlaylistAudioFileButton: View {
                 isCurrentlyPlaying: audioManager.currentlyPlayingID == audioFile.id && audioManager.playingFromSongsTab == false,
                 audioManager: audioManager,
                 isMultiSelectMode: isMultiSelectMode,
-                isSelected: selectedFileIDs.contains(audioFile.id)
+                isSelected: selectedFileIDs.contains(audioFile.id),
+                trackNumber: trackNumber
             )
         }
         .buttonStyle(PlainButtonStyle())
@@ -345,12 +358,19 @@ struct PlaylistAudioFileContextMenu: View {
             showingRenameAlert = true
         }
         Menu {
-            ForEach(audioManager.playlists.filter { $0.id != playlist.id }) { otherPlaylist in
+            ForEach(audioManager.sortedPlaylists.filter { $0.id != playlist.id }) { otherPlaylist in
                 Button(otherPlaylist.name) {
                     audioManager.addAudioFile(audioFile, to: otherPlaylist)
                 }
             }
         } label: { Label("Add to Another Playlist", systemImage: "plus") }
+        Menu {
+            ForEach(audioManager.sortedAlbums) { album in
+                Button(album.name) {
+                    audioManager.addAudioFile(audioFile, to: album)
+                }
+            }
+        } label: { Label("Add to Album", systemImage: "square.stack") }
         
         Button("Remove from '\(playlist.name)'", systemImage: "minus.circle") {
             audioManager.removeAudioFile(audioFile, from: playlist)

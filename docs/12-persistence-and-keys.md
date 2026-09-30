@@ -24,10 +24,10 @@ Declared as `let` properties on `AudioManager` (`audio_manager.swift:28-34`); al
 | Constant | Literal key | Type | Written by | Read by | Default when absent |
 |---|---|---|---|---|---|
 | `audioFilesKey` | `"savedAudioFiles"` | `Data` — JSON `[AudioFile]` | `AudioLibraryService.saveAudioFiles()` (`:30-37`) | `loadAudioFiles()` (`:11-28`) | `[]` |
-| `playlistsKey` | `"savedPlaylists"` | `Data` — JSON `[Playlist]` | `PlaylistService.savePlaylists()` (`:28-35`) **and** a detached-task duplicate in `createPlaylist` (`:120-128`) | `loadPlaylists()` (`:37-44`) | `[]` |
+| `playlistsKey` | `"savedPlaylists"` | `Data` — JSON `[Playlist]` | `PlaylistService.savePlaylists()` (`:69-76`) — synchronous, single writer | `loadPlaylists()` (`:78-85`) | `[]` |
 | `masterPlaylistKey` | `"masterPlaylistID"` | `Data` — JSON `UUID` | `loadOrCreateMasterPlaylist()` (`:70-72`) | `loadOrCreateMasterPlaylist()` (`:53-57`) | creates a new master playlist |
 | `algorithmKey` | `"selectedAlgorithm"` | `String` — `PitchAlgorithm.rawValue` | `AudioEngineService.saveSelectedAlgorithm()` (`:31-33`) | `loadSelectedAlgorithm()` (`:23-29`) | `.apple` |
-| `visualisationModeKey` | `"visualisationMode"` | `String` — `VisualisationMode.rawValue` | `AudioLibraryService.saveVisualisationMode()` (`:136-138`), triggered from `content_view.swift:301-302` | `loadVisualisationMode()` (`:129-134`) | `.Goniometer` (from the `@Published` initial value, `audio_manager.swift:19`) |
+| `visualisationModeKey` | `"visualisationMode"` | `String` — `VisualisationMode.rawValue` | `AudioLibraryService.saveVisualisationMode()` (`:136-138`), triggered from `content_view.swift:344-345` | `loadVisualisationMode()` (`:129-134`) | `.Goniometer` (from the `@Published` initial value, `audio_manager.swift:19`) |
 
 ### Exact `rawValue` strings these keys can hold
 
@@ -153,10 +153,12 @@ static let fileDirectory: URL = {
 
 | Step | Code |
 |---|---|
-| Encode | `image.jpegData(compressionQuality: 0.8)`, filename `artwork_<UUID>.jpg` (`ArtworkService.swift:11-26`) |
-| Assign | `setArtwork(_:for:)` rebuilds the model with the new `artworkImageName` (`:36-55` file, `:57-68` playlist) |
-| Free | `deleteArtworkIfUnused(_:)` (`:100-110`) counts references across `audioFiles` **and** `playlists`, deletes the JPEG only when both counts are 0 |
-| Decode | `loadArtworkImage(_:)` reads `Data(contentsOf:)` then `UIImage(data:)` (`:28-34`) — synchronous, on whatever thread asked |
+| Encode | `image.jpegData(compressionQuality: 0.8)`, filename `artwork_<UUID>.jpg` (`ArtworkService.swift:21-36`) |
+| Assign | `setArtwork(_:for:)` rebuilds the model with the new `artworkImageName` (`:48-67` file, `:69-81` playlist). The playlist overload also sets `coverIsManual = true` (`:77`) |
+| Free | `deleteArtworkIfUnused(_:)` (`:116-127`) counts references across `audioFiles` **and** `playlists`, deletes the JPEG only when both counts are 0 |
+| Decode | `loadArtworkImage(_:)` reads `Data(contentsOf:)` then `UIImage(data:)`, through an `NSCache<NSString, UIImage>` (`:33-46`) — still synchronous and on whatever thread asked, so the first load of each image does blocking I/O inside `body` |
+
+`artwork_<UUID>.jpg` is a fresh name on every save, so setting artwork twice creates two files and relies on `deleteArtworkIfUnused` to reap the first. **Albums do not add a second artwork store**: an album's cover is a row in the same `playlists` array, and `coverIsManual` records only whether that row's `artworkImageName` is a user choice or a derived value ([08 §7.1](08-playlists-and-library.md#71-coverismanual--the-manualderived-distinction)).
 
 ---
 
@@ -166,6 +168,7 @@ static let fileDirectory: URL = {
 |---|---|---|
 | Imported audio files | ✅ | `AudioFiles/` + `"savedAudioFiles"` |
 | Playlists, names, membership, order | ✅ | `"savedPlaylists"` |
+| Albums (as playlists with `isAlbum`), album artist, manual-vs-derived cover | ✅ | `"savedPlaylists"` — no new key, no separate `albums` array |
 | Hidden master playlist + its order | ✅ | `"savedPlaylists"` + `"masterPlaylistID"` |
 | Per-file/per-playlist artwork | ✅ | `Artwork/*.jpg` + model fields |
 | Renamed titles | ✅ | `AudioFile.title` in `"savedAudioFiles"` |
@@ -186,6 +189,7 @@ The three unpersisted playback flags are almost certainly unintentional — the 
 
 1. Declare the `let` key constant next to the others in `audio_manager.swift:28-34` (or `ThemeKey` in `setting_View.swift:851`).
 2. Add the `@Published var` with a `didSet` writer, or a `@AppStorage` — but be aware `@AppStorage` would be the first in the project, so match the surrounding style instead.
-3. Load it in `AudioManager.init` (`audio_manager.swift:65-99`) or `ThemeManager.init` (`setting_View.swift:1024-1092`) with a sensible default, and make the default derivable from a preset where one exists.
+3. Load it in `AudioManager.init` (`audio_manager.swift:73-107`) or `ThemeManager.init` (`setting_View.swift:1024-1092`) with a sensible default, and make the default derivable from a preset where one exists.
 4. If it is user-facing, add a control to `SettingsView` and a row to [11-settings-ui.md](11-settings-ui.md).
 5. Update the relevant table above. These docs are the inventory; if you add a key and do not add a row, the docs are now wrong.
+6. **If the value is a new field on `Playlist` or `AudioFile`, stop and read [14 · C1](14-known-issues.md#c1-master-playlist-recovery-destroys-every-user-playlist) and [C12](14-known-issues.md#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see) first.** There is no migration path, and a decode failure is not a degraded mode — it is a destructive reset of everything the user made. `Playlist` has a hand-written `init(from:)` for exactly this reason: **use `decodeIfPresent(…) ?? default`, never a required key.**

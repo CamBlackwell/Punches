@@ -120,17 +120,17 @@ Every service stores `unowned let manager: AudioManager` (e.g. `AudioPlaybackSer
 
 **Consequence for you as a caller:** a service method frequently mutates several `@Published` properties across multiple services and expects to be on the main thread. Only two call sites bother to hop:
 
-- `AudioManager.createPlaylist(name:)` wraps in `DispatchQueue.main.async` (`audio_manager.swift:141-143`)
-- `PlaylistService.reorderPlaylistSongs` defers its commit to `DispatchQueue.main.async` (`PlaylistService.swift:97-102`)
+- `AudioManager.createPlaylist(name:)` wraps in `DispatchQueue.main.async` (`audio_manager.swift:167-169`) — **redundant**, since the call sites are on the main run loop; the working tree's `createAlbum` and `PlaylistService.createPlaylist` are synchronous
+- `PlaylistService.reorderPlaylistSongs` defers its commit to `DispatchQueue.main.async` (`PlaylistService.swift:138-143`)
 
 Everything else runs synchronously on whatever thread called in. In practice that is always the main thread because the call originates in a SwiftUI view body or button action. This is an unenforced invariant, not a guarantee.
 
 ### Pattern: lazy property creates a cycle at `init` time
 
-`AudioManager.init` (`audio_manager.swift:65-99`) touches `libraryService`, `playlistService`, `engineService`, `sessionService` and `importService` in a fixed order. It also fires an **unstructured `Task`** partway through:
+`AudioManager.init` (`audio_manager.swift:73-107`) touches `libraryService`, `playlistService`, `engineService`, `sessionService` and `importService` in a fixed order. It also fires an **unstructured `Task`** partway through:
 
 ```swift
-// audio_manager.swift:76-80
+// audio_manager.swift:84-88
 Task { [weak self] in
     guard let self else { return }
     await self.importService.processPendingImports()
@@ -223,7 +223,7 @@ case .signalSmith:manager.currentEngine = nil   // not implemented
 5. Re-`load`, re-wire `onPlaybackFinished`, re-apply `tempo` and `pitch`.
 6. On main: `seek(to: savedTime)`, then `play` if it was playing.
 
-Note `manager.duration` is *not* restored on this path, and the analyser is never re-attached to the new engine — a new tap only happens on the next `play(audioFile:)` via `attachAnalyzerSafely()` (`audio_manager.swift:238-245`).
+Note `manager.duration` is *not* restored on this path, and the analyser is never re-attached to the new engine — a new tap only happens on the next `play(audioFile:)` via `attachAnalyzerSafely()` (`audio_manager.swift:261-269`).
 
 ---
 
@@ -232,8 +232,8 @@ Note `manager.duration` is *not* restored on this path, and the analyser is neve
 The complete path from a row tap to a redrawn goniometer:
 
 ```
-AudioFileButton row tap                       content_view.swift:1262-1283
-  └─ audioManager.play(audioFile:context:fromSongsTab:)      audio_manager.swift:198
+AudioFileButton row tap                       content_view.swift:1337-1358
+  └─ audioManager.play(audioFile:context:fromSongsTab:)      audio_manager.swift:242
        └─ AudioPlaybackService.play()          AudioPlaybackService.swift:12
             ├─ resolve playbackQueue from `context`         :15-19
             ├─ AVAudioSession.setCategory(.playback) + setActive(true)   :28-35
@@ -278,7 +278,7 @@ Three delays are stacked on the attach path (0.12 s + 0.15 s). They are not redu
 2. **Never block or allocate in the tap callback.** It runs on the render thread. `writeToRingBuffer` is `private` for exactly this reason.
 3. **`theme.*` writes fan out to `UserDefaults`.** `ThemeManager.apply(_:)` sets ~15 properties, each firing its own `didSet` → `UserDefaults.set`. Prefer mutating the specific property you need over calling `apply`.
 4. **`AudioManager.fileDirectory` is a `static let`.** It is resolved once, at first access, using whatever the app-group entitlement state is at that moment. Changing entitlements requires a relaunch, not just a rebuild.
-5. **`masterPlaylistID` must resolve to a `Playlist` in `playlists`.** `PlaylistService.loadOrCreateMasterPlaylist` (`PlaylistService.swift:52-74`) checks this and wipes all playlists + the key if it does not, then rebuilds. Anything that truncates `playlists` without preserving the master causes user-visible playlist loss.
+5. **`masterPlaylistID` must resolve to a `Playlist` in `playlists`.** `PlaylistService.loadOrCreateMasterPlaylist` (`PlaylistService.swift:93-115`) checks this and wipes all playlists + the key if it does not, then rebuilds. Anything that truncates `playlists` without preserving the master causes user-visible playlist loss.
 6. **The main actor is the default isolation.** Because `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, implicitly-isolated types (`AudioManager`, `ThemeManager`, and all `View`s) are main-actor-bound. Explicit `DispatchQueue.async` in and out of services is therefore deliberate, not legacy.
 7. **`playbackQueue` is context-dependent.** It is rebuilt from whichever list the user played *from* (`fromSongsTab`), and every reorder mutates it only when that flag matches. See [08-playlists-and-library.md](08-playlists-and-library.md#6-reordering).
 

@@ -4,6 +4,11 @@ import UIKit
 final class ArtworkService {
     unowned let manager: AudioManager
 
+    /// Decoded artwork, keyed by file name. `loadArtworkImage` is called from
+    /// `body` by every row and grid cell, so without this each body evaluation
+    /// re-reads and re-decodes every visible JPEG from disk.
+    private let imageCache = NSCache<NSString, UIImage>()
+
     init(manager: AudioManager) {
         self.manager = manager
     }
@@ -26,11 +31,18 @@ final class ArtworkService {
     }
 
     func loadArtworkImage(_ imageName: String) -> UIImage? {
-        let imageURL = manager.artworkDirectory.appendingPathComponent(imageName)
-        if let data = try? Data(contentsOf: imageURL) {
-            return UIImage(data: data)
+        if let cached = imageCache.object(forKey: imageName as NSString) {
+            return cached
         }
-        return nil
+
+        let imageURL = manager.artworkDirectory.appendingPathComponent(imageName)
+        guard let data = try? Data(contentsOf: imageURL),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+
+        imageCache.setObject(image, forKey: imageName as NSString)
+        return image
     }
 
     func setArtwork(_ image: UIImage, for audioFile: AudioFile) {
@@ -62,6 +74,7 @@ final class ArtworkService {
         guard let newFilename = saveArtwork(from: image) else { return }
 
         manager.playlists[index].artworkImageName = newFilename
+        manager.playlists[index].coverIsManual = true
         manager.playlistService.savePlaylists()
 
         deleteArtworkIfUnused(oldArtwork)
@@ -86,12 +99,15 @@ final class ArtworkService {
         deleteArtworkIfUnused(oldArtwork)
     }
 
+    /// Clears a hand-picked cover. For an album this reverts the artwork to the
+    /// derived one — the first member song that has any.
     func removeArtwork(from playlist: Playlist) {
         guard let index = manager.playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
 
         let oldArtwork = manager.playlists[index].artworkImageName
 
         manager.playlists[index].artworkImageName = nil
+        manager.playlists[index].coverIsManual = false
         manager.playlistService.savePlaylists()
 
         deleteArtworkIfUnused(oldArtwork)
@@ -104,6 +120,7 @@ final class ArtworkService {
         let playlistUsage = manager.playlists.filter { $0.artworkImageName == imageName }.count
 
         if audioFileUsage == 0 && playlistUsage == 0 {
+            imageCache.removeObject(forKey: imageName as NSString)
             let fileURL = manager.artworkDirectory.appendingPathComponent(imageName)
             try? FileManager.default.removeItem(at: fileURL)
         }

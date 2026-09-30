@@ -11,6 +11,9 @@ struct ContentView: View {
     @State private var libraryFilter: LibraryFilter = .songs
     @State private var showingCreatePlaylistAlert = false
     @State private var newPlaylistName = ""
+    @State private var showingCreateAlbumAlert = false
+    @State private var newAlbumName = ""
+    @State private var newAlbumArtist = ""
     @State private var showingRenameAlert = false
     @State private var renamingAudioFile: AudioFile?
     @State private var newFileName = ""
@@ -44,6 +47,9 @@ struct ContentView: View {
                 TabView(selection: $libraryFilter) {
                     playlistsPage
                         .tag(LibraryFilter.playlists)
+
+                    albumsPage
+                        .tag(LibraryFilter.albums)
 
                     songsPage
                         .tag(LibraryFilter.songs)
@@ -81,6 +87,9 @@ struct ContentView: View {
                 showingBatchPlaylistMenu: $showingBatchPlaylistMenu,
                 showingBatchDeleteAlert: $showingBatchDeleteAlert,
                 showingCreatePlaylistAlert: $showingCreatePlaylistAlert,
+                showingCreateAlbumAlert: $showingCreateAlbumAlert,
+                newAlbumName: $newAlbumName,
+                newAlbumArtist: $newAlbumArtist,
                 showingRenameAlert: $showingRenameAlert,
                 showingRenamePlaylistAlert: $showingRenamePlaylistAlert,
                 newPlaylistName: $newPlaylistName,
@@ -111,6 +120,7 @@ struct ContentView: View {
     private func preloadViews() {
         _ = UIImage(systemName: "music.note")
         _ = UIImage(systemName: "music.note.list")
+        _ = UIImage(systemName: "square.stack")
         _ = UIImage(systemName: "ellipsis.circle")
         _ = UIImage(systemName: "photo")
         _ = UIImage(systemName: "square.and.arrow.up")
@@ -169,7 +179,7 @@ struct ContentView: View {
 
     private var playlistsPage: some View {
         ZStack {
-            if audioManager.playlists.count == 1 {
+            if audioManager.sortedPlaylists.isEmpty {
                 EmptyPlaylistView(
                     showingCreatePlaylistAlert: $showingCreatePlaylistAlert,
                     newPlaylistName: $newPlaylistName
@@ -190,6 +200,30 @@ struct ContentView: View {
                     newPlaylistName: $newPlaylistName,
                     isScrolledDown: $isScrolledDown,
                     playlists: filteredPlaylists
+                )
+            }
+        }
+    }
+
+    private var albumsPage: some View {
+        ZStack {
+            if audioManager.sortedAlbums.isEmpty {
+                EmptyAlbumView(
+                    showingCreateAlbumAlert: $showingCreateAlbumAlert,
+                    newAlbumName: $newAlbumName,
+                    newAlbumArtist: $newAlbumArtist
+                )
+            } else {
+                AlbumsListView(
+                    audioManager: audioManager,
+                    navigateToPlayer: $navigateToPlayer,
+                    selectedAudioFile: $selectedAudioFile,
+                    artworkTarget: $artworkTarget,
+                    showingRenameAlert: $showingRenameAlert,
+                    renamingAudioFile: $renamingAudioFile,
+                    newFileName: $newFileName,
+                    isScrolledDown: $isScrolledDown,
+                    albums: filteredAlbums
                 )
             }
         }
@@ -242,6 +276,15 @@ struct ContentView: View {
         let base = audioManager.sortedPlaylists
         if searchText.isEmpty { return base }
         return base.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    var filteredAlbums: [Playlist] {
+        let base = audioManager.sortedAlbums
+        if searchText.isEmpty { return base }
+        return base.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText)
+                || ($0.artist?.localizedCaseInsensitiveContains(searchText) ?? false)
+        }
     }
 
 
@@ -316,6 +359,9 @@ struct ContentView: View {
                 }
                 Button { showingCreatePlaylistAlert = true } label: {
                     Label("Create Playlist", systemImage: "music.note.list")
+                }
+                Button { showingCreateAlbumAlert = true } label: {
+                    Label("Create Album", systemImage: "square.stack")
                 }
                 Button { showingSettings = true } label: {
                     Label("Settings", systemImage: "gear")
@@ -469,6 +515,12 @@ struct ContentView: View {
                 action: { libraryFilter = .playlists }
             )
             BottomTabButton(
+                icon: "square.stack",
+                title: compact ? "" : "Albums",
+                isSelected: libraryFilter == .albums,
+                action: { libraryFilter = .albums }
+            )
+            BottomTabButton(
                 icon: "music.note",
                 title: compact ? "" : "Songs",
                 isSelected: libraryFilter == .songs,
@@ -564,6 +616,7 @@ struct ContentView: View {
     private var currentTabIcon: String {
         switch libraryFilter {
         case .playlists: return "music.note.list"
+        case .albums:    return "square.stack"
         case .songs:     return "music.note"
         case .player:    return "play.circle.fill"
         }
@@ -642,6 +695,9 @@ extension View {
         showingBatchPlaylistMenu: Binding<Bool>,
         showingBatchDeleteAlert: Binding<Bool>,
         showingCreatePlaylistAlert: Binding<Bool>,
+        showingCreateAlbumAlert: Binding<Bool>,
+        newAlbumName: Binding<String>,
+        newAlbumArtist: Binding<String>,
         showingRenameAlert: Binding<Bool>,
         showingRenamePlaylistAlert: Binding<Bool>,
         newPlaylistName: Binding<String>,
@@ -702,6 +758,25 @@ extension View {
                             name: newPlaylistName.wrappedValue
                         )
                     }
+                }
+            }
+            .alert("New Album", isPresented: showingCreateAlbumAlert) {
+                TextField("Album Name", text: newAlbumName)
+                TextField("Artist (optional)", text: newAlbumArtist)
+                Button("Cancel", role: .cancel) {
+                    newAlbumName.wrappedValue = ""
+                    newAlbumArtist.wrappedValue = ""
+                }
+                Button("Create") {
+                    let artist = newAlbumArtist.wrappedValue
+                    if !newAlbumName.wrappedValue.isEmpty {
+                        audioManager.createAlbum(
+                            name: newAlbumName.wrappedValue,
+                            artist: artist.isEmpty ? nil : artist
+                        )
+                    }
+                    newAlbumName.wrappedValue = ""
+                    newAlbumArtist.wrappedValue = ""
                 }
             }
             .alert("Rename File", isPresented: showingRenameAlert) {
@@ -1427,9 +1502,22 @@ struct AudioFileRow: View {
     @EnvironmentObject var theme: ThemeManager
     var isMultiSelectMode: Bool = false
     var isSelected: Bool = false
+    /// Track position, shown by album pages only. Position in the album is the
+    /// track number, since the album's own order *is* the manual sort order.
+    var trackNumber: Int? = nil
 
     var body: some View {
         HStack {
+            if let trackNumber {
+                Text("\(trackNumber)")
+                    .font(.custom("HelveticaNeue-Light", size: 14, relativeTo: .body))
+                    .foregroundStyle(
+                        isCurrentlyPlaying ? theme.accentColor : theme.secondaryTextColor
+                    )
+                    .frame(width: 22, alignment: .trailing)
+                    .contentShape(Rectangle())
+            }
+
             if isMultiSelectMode {
                 Image(
                     systemName: isSelected ? "checkmark.circle.fill" : "circle"
@@ -1553,6 +1641,15 @@ struct AudioFileContextMenu: View {
             }
         } label: {
             Label("Add to Playlist", systemImage: "plus")
+        }
+        Menu {
+            ForEach(audioManager.sortedAlbums) { album in
+                Button(album.name) {
+                    audioManager.addAudioFile(audioFile, to: album)
+                }
+            }
+        } label: {
+            Label("Add to Album", systemImage: "square.stack")
         }
         Button(role: .destructive) {
             audioManager.deleteAudioFile(audioFile)

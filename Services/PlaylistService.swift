@@ -20,9 +20,50 @@ final class PlaylistService {
     }
 
     var sortedPlaylists: [Playlist] {
+        sortedCollections.filter { !$0.isAlbum }
+    }
+
+    var sortedAlbums: [Playlist] {
+        sortedCollections.filter { $0.isAlbum }
+    }
+
+    /// Every user collection except the master playlist, newest first. Both
+    /// pages filter this so `__MASTER_SONGS__` can never be rendered, and so
+    /// albums never leak into the Playlists tab.
+    private var sortedCollections: [Playlist] {
         manager.playlists
             .filter { $0.id != manager.masterPlaylistID }
             .sorted { $0.dateAdded > $1.dateAdded }
+    }
+
+    /// `audioFiles` keyed by id, so resolving a collection's members costs one
+    /// pass over the library instead of a full scan per member.
+    private var audioFilesByID: [UUID: AudioFile] {
+        Dictionary(
+            manager.audioFiles.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
+    func songsByPlaylistID(for playlists: [Playlist]) -> [UUID: [AudioFile]] {
+        let index = audioFilesByID
+        var result: [UUID: [AudioFile]] = [:]
+        result.reserveCapacity(playlists.count)
+        for playlist in playlists {
+            result[playlist.id] = playlist.audioFileIDs.compactMap { index[$0] }
+        }
+        return result
+    }
+
+    /// The artwork to show for an album. A cover the user picked by hand always
+    /// wins; otherwise it is the artwork of the first member song that has some.
+    /// `nil` means the caller should draw the empty placeholder.
+    func coverName(for album: Playlist, songs: [AudioFile]) -> String? {
+        if album.coverIsManual, let manual = album.artworkImageName {
+            return manual
+        }
+        return songs.first { $0.artworkImageName != nil }?.artworkImageName
+            ?? album.artworkImageName
     }
 
     func savePlaylists() {
@@ -113,22 +154,14 @@ final class PlaylistService {
         }
     }
 
-    func createPlaylist(name: String) {
-        let newPlaylist = Playlist(name: name)
+    func createPlaylist(name: String, isAlbum: Bool = false, artist: String? = nil) {
+        let newPlaylist = Playlist(name: name, isAlbum: isAlbum, artist: artist)
         manager.playlists.append(newPlaylist)
-        let playlists = manager.playlists
-        Task.detached(priority: .utility) { [weak self] in
-            guard let self else { return }
-            do {
-                let data = try JSONEncoder().encode(playlists)
-                UserDefaults.standard.set(data, forKey: self.manager.playlistsKey)
-            } catch {
-                print("failed to save playlists \(error.localizedDescription)")
-            }
-        }
+        savePlaylists()
     }
 
     func deletePlaylist(_ playlist: Playlist) {
+        guard playlist.id != manager.masterPlaylistID else { return }
         manager.playlists.removeAll { $0.id == playlist.id }
         manager.artworkService.deleteArtworkIfUnused(playlist.artworkImageName)
         savePlaylists()
@@ -137,6 +170,13 @@ final class PlaylistService {
     func renamePlaylist(_ playlist: Playlist, to newName: String) {
         guard let index = manager.playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
         manager.playlists[index].name = newName
+        savePlaylists()
+    }
+
+    func setArtist(_ artist: String?, for playlist: Playlist) {
+        guard let index = manager.playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
+        let trimmed = artist?.trimmingCharacters(in: .whitespacesAndNewlines)
+        manager.playlists[index].artist = (trimmed?.isEmpty ?? true) ? nil : trimmed
         savePlaylists()
     }
 
@@ -155,7 +195,7 @@ final class PlaylistService {
     }
 
     func getAudioFiles(for playlist: Playlist) -> [AudioFile] {
-        playlist.audioFileIDs
-            .compactMap { id in manager.audioFiles.first { $0.id == id } }
+        let index = audioFilesByID
+        return playlist.audioFileIDs.compactMap { index[$0] }
     }
 }

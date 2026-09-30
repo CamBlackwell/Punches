@@ -48,8 +48,8 @@ This is the load-bearing setting for the whole codebase, and it is invisible in 
 
 The two method annotations:
 
-- `ContentView.preloadViews()` — `View/content_view.swift:110`
-- `AudioManager.attachAnalyzerSafely()` — `audio_manager.swift:238`
+- `ContentView.preloadViews()` — `View/content_view.swift:119`
+- `AudioManager.attachAnalyzerSafely()` — `audio_manager.swift:260`
 
 > **Consequence for readers and for tooling.** `AudioManager`, `UnifiedAudioAnalyser`, `RingBuffer`, `PlaylistService`, `ThemeManager` and every view in the app are all main-actor-isolated, yet `class RingBuffer` (`:9`) and `class UnifiedAudioAnalyser` read as plain unannotated Swift. Nothing in the file tells you so. Jump-to-definition gives you no hint that a type is main-actor-bound, and moving code between types will produce isolation errors that have no visible cause in the diff. This is a legitimate trade-off for a SwiftUI app, but it should be documented in `CLAUDE.md`/`AGENTS.md`, which the repository does not have.
 
@@ -64,10 +64,11 @@ The two method annotations:
 | **AVAudioEngine render + tap** | `UnifiedAudioAnalyser.installTapSafely` — `:335-343` | `writeToRingBuffer(_:)` — see [§4](#4-the-real-time-thread-allocates) |
 | **Main run loop, 60 Hz** | `Timer.scheduledTimer` — `:286-291` | `updateSpectrum()` — all FFT, Q3, A-weighting, stereo and goniometer maths |
 | **`DispatchQueue.main`** | `audio.engine.queue` — `AppleAudioEngine.swift:10` | node setup (`AppleAudioEngine.swift:154` hops back to main at `:154` to publish) |
-| **`Task.detached(priority: .utility)`** | `PlaylistService.createPlaylist` — `:118-129` | `JSONEncoder().encode(playlists)` → `UserDefaults.standard.set` |
 | **Cooperative thread pool** | `AudioImportService` — `:36-53` | the `NSFileCoordinator` copy, via a checked continuation |
 | **Main run loop, per effect** | `AppBackground` — `ShaderEffects.swift:357`, `:386-388` | 60 fps `time` advance, **only while `useFogShader`** (`:388-391`) |
 | **Main run loop, per effect** | Water / Tunnel / Smoke — `ShaderEffects.swift:77`, `:220`, `:310` | each owns a clock at its own `frameInterval` |
+
+There is **no longer a detached `UserDefaults` writer** — `PlaylistService.createPlaylist` was the last one and is now synchronous ([14 · C3](14-known-issues.md#c3-taskdetached-races-saveplaylists-on-the-same-key)). The `AudioImportService` copy on the cooperative pool is the only off-main work that is not audio or DSP.
 
 The three raymarch/background effects deliberately run their own clocks so they can drop to 15–30 fps and pause independently; `ShaderEffects.swift:19-22` explains it. The `guard scenePhase == .active` in every handler — `ShaderEffects.swift:79`, `:222`, `:312`, `:387` — means all four pause when the app backgrounds. That is well done.
 
@@ -144,7 +145,7 @@ func attach(to audioEngine: AVAudioEngine,
 **`AudioManager` never passes either argument.** The only call site is:
 
 ```swift
-// audio_manager.swift:243
+// audio_manager.swift:265
 self.audioAnalyzer.attach(to: engine)
 ```
 
@@ -152,7 +153,7 @@ So `generation` is always `0` and `isCurrent` is always `{ true }`. The comment'
 
 > **The race this leaves open.** `attach` waits 150 ms on the main queue before installing the tap. If the user skips a track during that window, the *old* pending closure still fires, `isCurrent()` returns `true`, and a tap is installed on an engine that now belongs to a different song. `AudioEngineService` does call `detach(from: oldEngine)` on teardown (`Services/AudioEngineService.swift:46`), which removes the tap — but a closure that has already been enqueued and is executing `installTapSafely` concurrently with that `detach` is not ordered against it. The symptom is analysis for song N+1 driven by song N's audio, or an "already has a tap" ObjC exception. Implementing the generation counter the comment already describes is a ~5-line fix.
 
-The same "sleep and hope" pattern appears twice more: `AudioManager.attachAnalyzerSafely` (`audio_manager.swift:242`, 0.12 s) and `AudioPlaybackService.swift:98` (0.15 s). `UnifiedAudioAnalyser:308-309` explicitly notes *"Single 150 ms delay — enough for AVAudioEngine to finish its internal graph reconfiguration after play(). No nested asyncAfter."* — i.e. an earlier version stacked delays, and the fix was to stack fewer. The right answer is to observe the engine's actual state, not to guess a duration.
+The same "sleep and hope" pattern appears twice more: `AudioManager.attachAnalyzerSafely` (`audio_manager.swift:264`, 0.12 s) and `AudioPlaybackService.swift:98` (0.15 s). `UnifiedAudioAnalyser:308-309` explicitly notes *"Single 150 ms delay — enough for AVAudioEngine to finish its internal graph reconfiguration after play(). No nested asyncAfter."* — i.e. an earlier version stacked delays, and the fix was to stack fewer. The right answer is to observe the engine's actual state, not to guess a duration.
 
 ---
 
@@ -181,7 +182,7 @@ Thirteen `DispatchQueue.main` hops, all of the same shape — a correct pattern 
 DispatchQueue.main.async { [weak self] in … }
 ```
 
-with `[weak self]` at `:311`, `:350`, `:363`, `:563`, `:679`, `:733`, `AudioEngines/AppleAudioEngine.swift:154`, `Services/AudioEngineService.swift:63`, `Services/PlaylistService.swift:97`, `audio_manager.swift:141`, `View/content_view.swift:1640`, `Services/PlaylistService.swift:97`, and `[weak manager]` at `Services/AudioPlaybackService.swift:98`. No retain cycles. This part of the codebase is careful.
+with `[weak self]` at `:311`, `:350`, `:363`, `:563`, `:679`, `:733`, `AudioEngines/AppleAudioEngine.swift:154`, `Services/AudioEngineService.swift:63`, `Services/PlaylistService.swift:138`, `audio_manager.swift:145`, `View/content_view.swift:1737`, `Services/PlaylistService.swift:138`, and `[weak manager]` at `Services/AudioPlaybackService.swift:98`. No retain cycles. This part of the codebase is careful.
 
 > ### ⚠️ One of the hops is a correctness bug
 >
@@ -241,28 +242,22 @@ The rest of the import path is `async` and correctly `await`s `asset.load(.durat
 
 ---
 
-## 9. `Task.detached` racing `UserDefaults`
+## 9. `Task.detached` racing `UserDefaults` — RESOLVED
 
 ```swift
-// Services/PlaylistService.swift:118-129
-let newPlaylist = Playlist(name: name)
-manager.playlists.append(newPlaylist)
-let playlists = manager.playlists
-Task.detached(priority: .utility) { [weak self] in
-    let data = try JSONEncoder().encode(playlists)
-    UserDefaults.standard.set(data, forKey: self.manager.playlistsKey)
+// Services/PlaylistService.swift:197-201, after the fix
+func createPlaylist(name: String, isAlbum: Bool = false, artist: String? = nil) {
+    let newPlaylist = Playlist(name: name, isAlbum: isAlbum, artist: artist)
+    manager.playlists.append(newPlaylist)
+    savePlaylists()
 }
 ```
 
-`createPlaylist` alone writes the playlist list from a detached task. `savePlaylists()` writes the **same key from the main actor** (`:100`, `:111`, `:126`, `:136`). Both encode a full snapshot of `manager.playlists` and `UserDefaults.set` is last-writer-wins. So:
+**This was the only detached `UserDefaults` writer in the app, and it is gone.** It used to snapshot `manager.playlists`, then `Task.detached(priority: .utility)`-encode it to `playlistsKey` — while every other mutator wrote the *same key* synchronously from the main actor. `UserDefaults.set` is last-writer-wins, so if the `.utility` encode lost the race against a subsequent rename/reorder/add, the **stale snapshot landed last and the user's newer edit was lost**. It also read `self.manager.playlistsKey` off the main actor, an isolation violation unobserved only because the target does not compile.
 
-1. `createPlaylist` mutates the array, snapshots it, and queues the write.
-2. Any subsequent `savePlaylists()` — from a rename, a reorder, a track add, or a second `createPlaylist` — writes the newer snapshot on main.
-3. If the detached task's encode is slower than step 2 (plausible: it is `.utility` priority, contending with the 60 Hz analysis timer), **the stale snapshot lands last and the user loses the newer edit.**
+Encoding a small array to `Data` is microseconds, so `Task.detached` bought nothing. `createPlaylist` now calls `savePlaylists()` inline like its siblings.
 
-Nothing protects this. `Task.detached` also drops the actor context, so `self.manager.playlistsKey` is a main-actor property read off-main — an isolation violation that, again, is unobserved only because the target does not compile.
-
-The fix is trivial: `Task.detached` buys nothing here. Encoding a small array to `Data` and writing to `UserDefaults` is microseconds of work, and `UserDefaults` is itself thread-safe. Just call `savePlaylists()` like every sibling method does.
+**What is *not* fixed:** there is still no serial write queue or coalescing for any `UserDefaults` key. Every mutator performs a full `JSONEncoder` pass over the whole array synchronously on the main actor. A batch action that adds N songs to an album is N full encodes — see [14 · C9](14-known-issues.md#c9-no-serial-write-queue-for-userdefaults).
 
 ---
 
@@ -286,7 +281,7 @@ The natural improvement is a dedicated `DispatchSourceTimer` on a serial queue t
 | 2 | **Critical** | `writeToRingBuffer` is called from the RT thread but the type is main-actor-isolated; violation unobserved only because the target does not compile | [§4](#4-the-real-time-thread-allocates) |
 | 3 | **High** | The documented `generation` cancellation gate is never wired up; a stale 150 ms `asyncAfter` can install a tap on the wrong engine | [§5](#5-the-two-documented-safeguards-that-are-not-implemented) |
 | 4 | **High** | `withCheckedThrowingContinuation` has two unguarded `resume` paths → double-resume trap | [§8](#8-structured-concurrency-one-continuation-double-resume-hazard) |
-| 5 | **High** | `Task.detached` and `savePlaylists()` race on the same `UserDefaults` key → silent playlist loss | [§9](#9-taskdetached-racing-userdefaults) |
+| 5 | **High** | ~~`Task.detached` and `savePlaylists()` race on the same `UserDefaults` key → silent playlist loss~~ **RESOLVED** in the working tree; no serial write queue for the other keys ([C9](14-known-issues.md#c9-no-serial-write-queue-for-userdefaults)) remains | [§9](#9-taskdetached-racing-userdefaults--resolved) |
 | 6 | Medium | Isolation is invisible: 0 type-level `@MainActor`, 0 `Sendable`, 0 `nonisolated` | [§2](#2-isolation-comes-from-a-build-setting-not-the-source) |
 | 7 | Medium | `RingBuffer` is labelled "Lock-Free" and uses `NSLock` | [§6](#6-locking) |
 | 8 | Medium | `reorderPlaylistSongs` mutates main state across an unnecessary hop, capturing `index` by value | [§7](#7-hopping-to-main) |

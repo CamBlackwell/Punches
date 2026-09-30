@@ -37,19 +37,53 @@ struct Playlist: Identifiable, Codable {
     var audioFileIDs: [UUID]
     let dateAdded: Date
     var artworkImageName: String?
-    
-    init(name: String, artworkImageName: String? = nil) {
+    /// Albums are playlists with a cover-first presentation: same membership,
+    /// same ordering, same mutations, surfaced on their own page.
+    var isAlbum: Bool
+    /// True once the user picks a cover by hand. While false, the cover shown is
+    /// derived from the first member song that has artwork.
+    var coverIsManual: Bool
+    var artist: String?
+
+    init(name: String, artworkImageName: String? = nil, isAlbum: Bool = false, artist: String? = nil) {
         self.id = UUID()
         self.name = name
         self.audioFileIDs = []
         self.dateAdded = Date()
         self.artworkImageName = artworkImageName
+        self.isAlbum = isAlbum
+        self.coverIsManual = artworkImageName != nil
+        self.artist = artist
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, audioFileIDs, dateAdded, artworkImageName
+        case isAlbum, coverIsManual, artist
+    }
+
+    /// Decoded field by field so that a blob written before a field existed
+    /// still loads. The synthesized decoder requires every non-optional key to
+    /// be present, and one missing key throws away the whole `savedPlaylists`
+    /// array — which routes `loadOrCreateMasterPlaylist` into its recovery
+    /// branch and deletes every user playlist. New keys must use
+    /// `decodeIfPresent` with a default for the same reason.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        audioFileIDs = try container.decodeIfPresent([UUID].self, forKey: .audioFileIDs) ?? []
+        dateAdded = try container.decode(Date.self, forKey: .dateAdded)
+        artworkImageName = try container.decodeIfPresent(String.self, forKey: .artworkImageName)
+        isAlbum = try container.decodeIfPresent(Bool.self, forKey: .isAlbum) ?? false
+        coverIsManual = try container.decodeIfPresent(Bool.self, forKey: .coverIsManual) ?? false
+        artist = try container.decodeIfPresent(String.self, forKey: .artist)
     }
 }
 
 enum LibraryFilter: Hashable {
     case songs
     case playlists
+    case albums
     case player
 }
 

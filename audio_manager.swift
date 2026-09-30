@@ -62,6 +62,10 @@ class AudioManager: NSObject, ObservableObject {
         playlistService.sortedPlaylists
     }
 
+    var sortedAlbums: [Playlist] {
+        playlistService.sortedAlbums
+    }
+
     override init() {
         self.artworkDirectory = AudioManager.fileDirectory.appendingPathComponent("Artwork", isDirectory: true)
         super.init()
@@ -141,6 +145,24 @@ class AudioManager: NSObject, ObservableObject {
         DispatchQueue.main.async { [weak self] in
             self?.playlistService.createPlaylist(name: name)
         }
+    }
+
+    func createAlbum(name: String, artist: String? = nil) {
+        DispatchQueue.main.async { [weak self] in
+            self?.playlistService.createPlaylist(name: name, isAlbum: true, artist: artist)
+        }
+    }
+
+    func coverName(for album: Playlist, songs: [AudioFile]) -> String? {
+        playlistService.coverName(for: album, songs: songs)
+    }
+
+    func songsByPlaylistID(for playlists: [Playlist]) -> [UUID: [AudioFile]] {
+        playlistService.songsByPlaylistID(for: playlists)
+    }
+
+    func setArtist(_ artist: String?, for playlist: Playlist) {
+        playlistService.setArtist(artist, for: playlist)
     }
 
     func deletePlaylist(_ playlist: Playlist) {

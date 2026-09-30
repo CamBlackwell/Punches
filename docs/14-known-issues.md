@@ -56,6 +56,8 @@ Every other file is excluded. Each synchronized root group carries a `PBXFileSys
 
 `silly_speed.swift` instantiates `ContentView`, `AudioManager` and `ThemeManager`; `audio_manager.swift` instantiates seven services. The build fails immediately with `cannot find '<Type>' in scope`, dozens of times.
 
+**Now 31 Swift files, and it is getting worse with each feature.** `View/Album_view.swift` was added for the album feature and is not in the target either, so it is invisible to any build — including the developer's, unless they add it in Xcode. **A new file is not automatically a new compile error; it is a new file that is never checked.** Fix [A1](#a1-the-target-compiles-7-of-30-swift-files) before adding further files, or every subsequent feature is being written blind.
+
 **Fix:** add the four folders to `Punches3`'s `fileSystemSynchronizedGroups` and delete the four exception sets. See [03 §8.1](03-project-structure-and-build.md#81-repairing-target-membership). Expect [G1](#g1-missing-grainoverlay-shader-and-bluenoise64-asset) and [E2](#e2-rt-closure-calls-a-main-actor-method) to surface immediately afterwards — they are latent *because* of this bug.
 
 **Exploration notes.**
@@ -89,7 +91,7 @@ Every other file is excluded. Each synchronized root group carries a `PBXFileSys
 **Exploration notes.**
 - **Ruled out:** "the entitlement is declared somewhere else." `CODE_SIGN_ENTITLEMENTS` points at `Punches3.entitlements`, which is an empty `<dict/>`. Two complete, correct entitlement files exist in the tree and nothing references them.
 - **Ruled out:** "`containerURL(forSecurityApplicationGroupIdentifier:)` works without the entitlement." It returns `nil`. This is the reason the failure is *silent*: `fileDirectory` falls back to `Documents` and import appears to work, so the broken cross-process path is invisible until the extension is involved.
-- **To confirm:** the app already prints the container URL at launch (`audio_manager.swift:96-98`). Compare its output with the group identifier declared in the two unreferenced entitlement files — a `nil` there is the confirmation.
+- **To confirm:** the app already prints the container URL at launch (`audio_manager.swift:104-106`). Compare its output with the group identifier declared in the two unreferenced entitlement files — a `nil` there is the confirmation.
 - **Ordering:** this is a prerequisite for [B1](14-known-issues.md#b1-app-group-entitlement-is-empty), [B2](#b2-no-share-extension-target-exists) and the whole of section B. Fix it before testing any of them, or you will be debugging a path that cannot possibly succeed.
 
 ### A4 `grainOverlay` is undefined and `tunnelEffect` is mis-called
@@ -222,7 +224,7 @@ Only `Punches3`, `Punches3Tests` and `Punches3UITests` are defined (`:250-313`).
 
 **High.**
 
-The document picker (`View/content_view.swift:1565`) does not set `PHPickerConfiguration.selectionLimit`, so the user can select many files, but the loop only imports the first (`:1566-1568`). No error, no message.
+The document picker (`View/content_view.swift:1662`) does not set `PHPickerConfiguration.selectionLimit`, so the user can select many files, but the loop only imports the first (`:1566-1568`). No error, no message.
 
 **Fix:** import all URLs, or set `selectionLimit = 1` so the UI matches the behaviour.
 
@@ -287,7 +289,7 @@ Called from `AudioManager.init` and from a `scenePhase` handler in `silly_speed.
 
 **Exploration notes.**
 - **Ruled out:** "`isImporting` guards re-entry." `isImporting` is written (set `true` at the start, `false` in both completion paths) but never *read* as a precondition, so it is a display flag only.
-- **Ruled out:** "the two call sites cannot overlap." They can — the app processes pending imports at launch (`audio_manager.swift:76-80`) and the share extension processes its own batch whenever the user shares again. Both write the same container.
+- **Ruled out:** "the two call sites cannot overlap." They can — the app processes pending imports at launch (`audio_manager.swift:84-88`) and the share extension processes its own batch whenever the user shares again. Both write the same container.
 - **To confirm:** share a second batch while the first import is still in flight, or trigger a share immediately after launching with pending files.
 - **Fix shape:** an actor or a lock around the pending directory, plus an actual precondition check — and see [B6](#b6-unsynchronised-fileurlsappend-in-the-extension) for the same class of bug in the extension process.
 
@@ -295,7 +297,7 @@ Called from `AudioManager.init` and from a `scenePhase` handler in `silly_speed.
 
 **High.**
 
-`PlaylisList_view.swift:291-296` shares `audioManager.urlForSharing($0)` — the real file in `fileDirectory` — and "Delete N Files" sits at `:310-312` in the same menu. Deleting during or right after a share leaves the receiving app with a URL that no longer resolves. The Songs tab avoids this by copying to a temp directory first; the playlist path and the single-song menu (`View/content_view.swift:1523-1526`) do not.
+`PlaylisList_view.swift:304-309` shares `audioManager.urlForSharing($0)` — the real file in `fileDirectory` — and "Delete N Files" sits at `:310-312` in the same menu. Deleting during or right after a share leaves the receiving app with a URL that no longer resolves. The Songs tab avoids this by copying to a temp directory first; the playlist path and the single-song menu (`View/content_view.swift:1611-1614`) do not.
 
 **Fix:** route every share through `prepareFilesForSharing`.
 
@@ -309,7 +311,7 @@ Called from `AudioManager.init` and from a `scenePhase` handler in `silly_speed.
 
 **Medium.**
 
-`View/content_view.swift:1368-1373` creates `temporaryDirectory/<uuid>/`; `onDismiss` (`:863-865`) removes only the files inside, never the directory — one empty directory leaked per share session. And `:1381-1384` copies by `lastPathComponent`, so two same-named files in one selection collide, the `copyItem` fails, the `print` at `:1387` swallows it, and that file is silently omitted from the share.
+`View/content_view.swift:1443-1448` creates `temporaryDirectory/<uuid>/`; `onDismiss` (`:863-865`) removes only the files inside, never the directory — one empty directory leaked per share session. And `:1381-1384` copies by `lastPathComponent`, so two same-named files in one selection collide, the `copyItem` fails, the `print` at `:1387` swallows it, and that file is silently omitted from the share.
 
 **Fix:** remove the directory; de-duplicate destination names with a counter suffix.
 
@@ -317,7 +319,7 @@ Called from `AudioManager.init` and from a `scenePhase` handler in `silly_speed.
 
 **Medium.**
 
-`@State private var shareURL: URL?` (`View/content_view.swift:22`) is threaded into `applySheets` (`:76`, `:608`, `:617`) and read at `:617`, but **nothing ever assigns it.** The share sheet at `:616-620` can never present. Every live share uses the plural `shareURLs`.
+`@State private var shareURL: URL?` (`View/content_view.swift:25`) is threaded into `applySheets` (`:76`, `:608`, `:617`) and read at `:617`, but **nothing ever assigns it.** The share sheet at `:616-620` can never present. Every live share uses the plural `shareURLs`.
 
 **Fix:** delete the state, the parameter, and the sheet.
 
@@ -351,6 +353,8 @@ If `masterPlaylistID` becomes unreadable for any reason — decode failure, part
 - **To confirm:** delete only the `masterPlaylistID` key and relaunch. Every user playlist is gone and cannot be recovered.
 - **Fix shape:** never destroy user data during recovery. Create a new master playlist alongside the existing ones and leave them untouched. This is the same "recovery must not be destructive" rule as [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see) — consider fixing them with one shared code path.
 - **Note:** this entry is referenced from the [reported symptoms table](14-known-issues.md#reported-symptoms) as a data-loss contributor.
+- **⚠️ This is the trap that made the album feature dangerous.** Albums added three stored properties to `Playlist` (`isAlbum`, `coverIsManual`, `artist` — [08 §2.2](08-playlists-and-library.md#22-playlist)). With the **synthesised** decoder, all three would be *required* keys, every existing blob would throw, `loadOrCreateMasterPlaylist` would catch it, and **every user playlist and album would be deleted on the next launch** — with no migration and no error. The working tree avoids this by giving `Playlist` a hand-written `init(from:)` in which every added key uses `decodeIfPresent(…) ?? default`. So this entry is **still Critical**: the underlying recovery path is untouched, and any *future* field added without `decodeIfPresent` re-opens it. Nothing enforces that convention — there is no test, no lint, and the compiler will not object.
+- **Suggested regression test:** encode a `Playlist` array with the pre-album key set (`id`, `name`, `audioFileIDs`, `dateAdded`, `artworkImageName` only), decode it, and assert all three new fields take their defaults and that `audioFileIDs` order survives. This is the single highest-value test in the project and the test targets are empty ([A2](#a2-both-test-targets-are-empty)).
 
 ### C2 `cleanupOrphanedFiles` deletes untracked files
 
@@ -368,17 +372,17 @@ If `masterPlaylistID` becomes unreadable for any reason — decode failure, part
 
 ### C3 `Task.detached` races `savePlaylists()` on the same key
 
-**High.**
+**High — FIXED in the working tree, uncommitted.**
 
 `PlaylistService.createPlaylist` (`:118-129`) snapshots `manager.playlists` and writes it to `UserDefaults` from a `.utility` detached task. Every other mutator writes the same key synchronously from main. `UserDefaults.set` is last-writer-wins, so a create followed by any faster mutation loses the playlist. It is intermittent because `.utility` usually loses to main. The detached task also reads `self.manager.playlistsKey` off the main actor — an isolation violation, unobserved only because of [A1](#a1-the-target-compiles-7-of-30-swift-files).
 
-**Fix:** delete the `Task.detached` and call `savePlaylists()`.
+**Fix:** delete the `Task.detached` and call `savePlaylists()`. — **Done.** `createPlaylist(name:isAlbum:artist:)` is now `PlaylistService.swift:197-201`: append, `savePlaylists()`, inline. `AudioManager.createAlbum` (`:150-153`) is a plain synchronous call for the same reason. The `DispatchQueue.main.async` hop in `AudioManager.createPlaylist` (`:144-147`) is redundant but harmless, since the whole app is `@MainActor` by default ([03](03-project-structure-and-build.md)).
 
 **Exploration notes.**
 - **Ruled out:** "`UserDefaults` serialises writes, so there is no race." It serialises access to the plist; it does not make a read-modify-write across two tasks atomic. Both tasks can encode the same stale array, and the last writer wins.
 - **Ruled out:** "the detached task only ever appends." It re-encodes the whole array from whatever `manager.playlists` holds at that moment.
-- **To confirm:** reorder playlists quickly enough to hit both the `Task.detached` save and the `DispatchQueue.main.async` save in `createPlaylist`. The lost write is intermittent by nature, so a single run proves nothing — run it in a loop.
-- **Fix shape:** a single serial writer (an actor, or one dedicated queue) for all `UserDefaults` mutations. The same fix closes [E6](#e6-taskdetached-writes-userdefaults-off-main) and part of [C9](#c9-no-serial-write-queue-for-userdefaults).
+- ~~**To confirm:** reorder playlists quickly enough to hit both the `Task.detached` save and the `DispatchQueue.main.async` save in `createPlaylist`. The lost write is intermittent by nature, so a single run proves nothing — run it in a loop.~~ **No longer applicable** — there is one writer path now, so the race is structurally impossible. Verify instead that a rapid create-then-rename-then-add sequence leaves all three changes on disk.
+- **Fix shape:** a single serial writer (an actor, or one dedicated queue) for all `UserDefaults` mutations. The same fix closes [E6](#e6-taskdetached-writes-userdefaults-off-main) and part of [C9](#c9-no-serial-write-queue-for-userdefaults). ⚠️ **Only the `createPlaylist` half is done.** The serial-writer recommendation still stands for every other key — see [C9](#c9-no-serial-write-queue-for-userdefaults) and [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see).
 
 ### C4 Reordering does not update `playbackQueue`
 
@@ -426,7 +430,7 @@ The same function hops to `DispatchQueue.main.async` (`:97`) before writing `sel
 
 **Medium.**
 
-`filteredSongs` filters the manual order, but `songsPage`'s empty-state check (`View/content_view.swift:200`) tests `audioManager.audioFiles.isEmpty` — the **unfiltered** array. With a search active and no matches, the user sees a blank list with no "no results" message. Playlists have the same bug at `:172` (`playlists.count == 1`).
+`filteredSongs` filters the manual order, but `songsPage`'s empty-state check (`View/content_view.swift:234`) tests `audioManager.audioFiles.isEmpty` — the **unfiltered** array. With a search active and no matches, the user sees a blank list with no "no results" message. Playlists have the same bug at `:172` (`playlists.count == 1`).
 
 **Fix:** test the filtered arrays.
 
@@ -471,7 +475,7 @@ The chain, in launch order:
 1. `AudioLibraryService.loadAudioFiles()` (`:11`) opens with `guard let data = UserDefaults.standard.data(forKey: manager.audioFilesKey) else { return }` (`:12`). If the key is absent, the function returns with `manager.audioFiles` still `[]` — it does **not** fall back to scanning the directory.
 2. The decode is **all-or-nothing over the whole array** (`:15`): `try JSONDecoder().decode([AudioFile].self, from: data)`. A single throw is caught and printed (`:25-27`), leaving `audioFiles == []`. Every song is lost from the index, not just the bad one.
 3. `AudioFile` (`:3` of `Models.swift`) uses **synthesized `Codable`** — no `CodingKeys`, no `init(from:)`, no `decodeIfPresent` defaults. Any field added, renamed, or retyped between two installs of the app invalidates the entire blob, and the app cannot be built twice with a changed model without losing every library.
-4. Still in `AudioManager.init`, a `Task` runs `processPendingImports()` and then `cleanupOrphanedFiles()` (`audio_manager.swift:76-80`).
+4. Still in `AudioManager.init`, a `Task` runs `processPendingImports()` and then `cleanupOrphanedFiles()` (`audio_manager.swift:84-88`).
 5. `cleanupOrphanedFiles` builds `trackedFileNames` from the now-empty `audioFiles` (`:93`) and removes **every** entry in `fileDirectory` that is not literally named `"Artwork"` (`:99-104`).
 
 The files are not hidden — they are unlinked. There is no Trash, no backup, and no confirmation.
@@ -485,7 +489,7 @@ Aggravating factor: the two branches of `fileDirectory` (`audio_manager.swift:47
 - **Ruled out:** "imports are never saved." `saveAudioFiles()` is called on every import (`AudioImportService.swift:68`), and the write is synchronous `UserDefaults.set`.
 - **Ruled out:** "a non-finite duration corrupts the blob." The importer rejects NaN/infinite durations and deletes the copy before throwing (`AudioImportService.swift:59-62`), so `JSONEncoder` should not see one.
 - **To confirm:** the *mechanism* is proven from source; the *trigger* is not. Instrument `loadAudioFiles` to log which branch it took and the decode error verbatim, and make `cleanupOrphanedFiles` log a dry-run summary (`would delete N files`) before it deletes anything. Then ask the reporter what they did immediately before the files vanished — reinstall, Xcode "Run" with a changed model, iCloud restore, or a `UserDefaults` reset are the candidates that fit.
-- **Watch for:** the same all-or-nothing pattern in `loadPlaylists` (`PlaylistService.swift:40`) and in `loadOrCreateMasterPlaylist` (`:53-56`), which is the root of [C1](#c1-master-playlist-recovery-destroys-every-user-playlist).
+- **Watch for:** the same all-or-nothing pattern in `loadPlaylists` (`PlaylistService.swift:81`) and in `loadOrCreateMasterPlaylist` (`:53-56`), which is the root of [C1](#c1-master-playlist-recovery-destroys-every-user-playlist).
 
 ### C13 The app opens on the oldest import, not the top of the list
 
@@ -496,12 +500,12 @@ Aggravating factor: the two branches of `fileDirectory` (`audio_manager.swift:47
 The sort is correct. `sortedAudioFiles` sorts `$0.dateAdded > $1.dateAdded` — newest first — in **both** branches (`PlaylistService.swift:14` and `:19`). The bug is that two different arrays are used for two different jobs, and only one of them is sorted.
 
 - `manager.audioFiles` is the raw array. It is only ever `append`ed to (`AudioImportService.swift:67`) and `removeAll`-filtered on delete. **Nothing ever sorts it**, and `saveAudioFiles` persists it in that append order, so the order survives relaunch.
-- `manager.displayedSongs` is the sorted snapshot the list actually renders (`View/content_view.swift:236`).
+- `manager.displayedSongs` is the sorted snapshot the list actually renders (`View/content_view.swift:270`).
 
 The player page falls back to the **unsorted** array:
 
 ```swift
-// View/content_view.swift:224
+// View/content_view.swift:258
 if let file = selectedAudioFile ?? audioManager.audioFiles.first {
 ```
 
@@ -521,7 +525,7 @@ Secondary defect in the same area: the refresh of `displayedSongs` on import sit
 
 **Medium.**
 
-`sortedAudioFiles` reads the master playlist's `audioFileIDs` — which is the user's manual order, written by `reorderSongs` (`PlaylistService.swift:77-87`) — and then **re-sorts it**, throwing that order away:
+`sortedAudioFiles` reads the master playlist's `audioFileIDs` — which is the user's manual order, written by `reorderSongs` (`PlaylistService.swift:118-128`) — and then **re-sorts it**, throwing that order away:
 
 ```swift
 // Services/PlaylistService.swift:17-19
@@ -678,7 +682,7 @@ No `XCTestCase`, no `test` methods. A print-based utility with a `FrequencyMappe
 
 **Medium.**
 
-`View/setting_View.swift:1158` is a theme and background-effect editor. No volume, pitch, tempo, loop, output routing, session, import, or diagnostics. Titled "Settings" behind a gear, reachable only from the Songs tab's overflow menu (`View/content_view.swift:320-322`).
+`View/setting_View.swift:1158` is a theme and background-effect editor. No volume, pitch, tempo, loop, output routing, session, import, or diagnostics. Titled "Settings" behind a gear, reachable only from the Songs tab's overflow menu (`View/content_view.swift:366-368`).
 
 ### D14 No metadata is read anywhere; the title is the filename
 
@@ -696,9 +700,12 @@ What exists instead:
 |---|---|---|
 | Title | filename minus extension, set once at import | `Models.swift:21` |
 | Duration | `try await asset.load(.duration)` — the **only** metadata read | `AudioImportService.swift:55-57` |
-| Artist / album / genre | no field, no read, no UI | — |
+| Artist / album / genre | no field on `AudioFile`, no read, no UI | — |
+| **Album** | **a user-constructed collection, not metadata** — `Playlist` with `isAlbum` and a manually-typed `artist`, both persisted | `Models.swift:40-113` |
 | Embedded artwork | never extracted; only set by hand via `ArtworkService.setArtwork` | `Services/ArtworkService.swift` |
-| Search | matches `title` only | `View/content_view.swift:238` |
+| Search | matches `title`; also matches album title and **manually-typed** album artist | `View/content_view.swift:272`, `:282-287` |
+
+> **The album feature makes this entry more visible, not smaller.** An album *looks* like the thing audio metadata would give you, so a user reading the grid will reasonably expect the artist line to be the real one from the file's tags. It is not: it is a string the user typed into an alert, and the album's membership is whatever order they added the songs in. `Playlist.artist` was added **specifically to `Playlist`, not `AudioFile`**, because adding fields to `AudioFile` is the [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see) trigger. The honest framing is that albums are a manual curation feature layered on top of a library with no metadata, not a first step toward reading it.
 
 Two of the table's rows are the same defect wearing different clothes. The import path builds `AVURLAsset(url: options: nil)` (`AudioImportService.swift:55`), so an asset still backed by iCloud is read **synchronously and un-awaited** at that point rather than being told to fetch; and the two `AudioFile` initialisers disagree about the title — `:21` strips the extension, the decoding initialiser at `:30` keeps the full `fileName` — which is [C8](#c8-the-two-audiofiletitle-fallbacks-disagree).
 
@@ -710,6 +717,8 @@ Two of the table's rows are the same defect wearing different clothes. The impor
 - **Ruled out:** "the `AVAsset` call is already doing it." `AudioImportService.swift:56` awaits exactly one key path, `.duration`.
 - **To confirm:** drop a tagged M4A with a non-matching filename tag into the picker. Title, duration, and artwork should all come from the filename and from a manual set, proving nothing is read.
 - **Ordering hazard:** adding fields to `AudioFile` *without* a custom decoder is the exact trigger for [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see) wiping the library. Fix C12 first, or land the two changes together.
+- **Confirmed by the album work:** this hazard is not theoretical. Adding `isAlbum` / `coverIsManual` / `artist` to `Playlist` would have triggered [C1](#c1-master-playlist-recovery-destroys-every-user-playlist) — deleting every user playlist and album on next launch — and was only safe because `Playlist` was given a hand-written `init(from:)` with `decodeIfPresent` defaults ([08 §2.2](08-playlists-and-library.md#22-playlist)). **`AudioFile` still has no such decoder.** Whoever implements the fix above has to write one, and the same regression test should cover both types.
+- **Suggested test:** import a tagged M4A whose ID3 artist/album differ from the filename, and assert both currently come out as nothing. Then, post-fix, assert they survive a relaunch — that second half is the part that is dangerous.
 
 ---
 
@@ -760,7 +769,7 @@ With `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` (`project.pbxproj:585`, `:624`)
 
 **High.**
 
-`attach(to:generation:isCurrent:)` (`:298-313`) documents that "AudioManager bumps its generation counter on every new song so stale closures self-cancel". `AudioManager` calls it as `attach(to: engine)` (`audio_manager.swift:243`), so `generation` is always `0` and `isCurrent` is always `{ true }`. The described mechanism does not exist; grepping for `generation` returns only the four lines in `UnifiedAudioAnalyser`.
+`attach(to:generation:isCurrent:)` (`:298-313`) documents that "AudioManager bumps its generation counter on every new song so stale closures self-cancel". `AudioManager` calls it as `attach(to: engine)` (`audio_manager.swift:265`), so `generation` is always `0` and `isCurrent` is always `{ true }`. The described mechanism does not exist; grepping for `generation` returns only the four lines in `UnifiedAudioAnalyser`.
 
 **Impact:** a skip during the 150 ms window lets the stale closure install a tap on the wrong engine — wrong-track analysis, or an "already has a tap" ObjC exception.
 
@@ -790,15 +799,15 @@ With `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` (`project.pbxproj:585`, `:624`)
 
 ### E6 `Task.detached` writes `UserDefaults` off-main
 
-**High.**
+**High — FIXED for the playlist key in the working tree, uncommitted.**
 
-See [C3](#c3-taskdetached-races-saveplaylists-on-the-same-key).
+See [C3](#c3-taskdetached-races-saveplaylists-on-the-same-key). The only `Task.detached` writer in the app was `createPlaylist`; it is gone, so this specific off-main `UserDefaults` write no longer exists.
 
 **Exploration notes.**
 - **Ruled out:** "it is safe because `UserDefaults` is thread-safe." The individual `set` is safe. The read-modify-write around it is not — this is the same defect as [C3](#c3-taskdetached-races-saveplaylists-on-the-same-key), on a different key.
 - **Ruled out:** "the detached task only ever appends." It encodes the whole array from whatever it observes.
-- **To confirm:** two concurrent playlist mutations in a loop; the lost write is intermittent, so a single run is not evidence either way.
-- **Fix shape:** one serial writer for all `UserDefaults` mutations — an actor or a dedicated queue — and use it from `PlaylistService`, `LibraryService` and `ThemeManager` alike. Fixing this and [C3](#c3-taskdetached-races-saveplaylists-on-the-same-key) and [C9](#c9-no-serial-write-queue-for-userdefaults) together is cheaper than three times.
+- ~~**To confirm:** two concurrent playlist mutations in a loop; the lost write is intermittent, so a single run is not evidence either way.~~ **No longer applicable** — there is a single writer path for the playlist key. The remaining exposure is the *absence* of a serial writer for every other key, which is [C9](#c9-no-serial-write-queue-for-userdefaults).
+- **Fix shape:** one serial writer for all `UserDefaults` mutations — an actor or a dedicated queue — and use it from `PlaylistService`, `LibraryService` and `ThemeManager` alike. Fixing this and [C3](#c3-taskdetached-races-saveplaylists-on-the-same-key) and [C9](#c9-no-serial-write-queue-for-userdefaults) together is cheaper than three times. **C3 and E6 are now done; C9 is not.**
 
 ### E7 `reorderPlaylistSongs` mutates state across a dispatch hop
 
@@ -817,7 +826,7 @@ See [C5](#c5-reorderplaylistsongs-captures-index-across-a-dispatch-hop).
 
 **Medium.**
 
-`AudioManager.attachAnalyzerSafely` uses `asyncAfter(+0.12)` (`audio_manager.swift:242`); `UnifiedAudioAnalyser.attach` uses `+0.15` (`:311`); `AudioPlaybackService.swift:98` uses `+0.15`. The comment at `:308-309` says the 150 ms is "enough for AVAudioEngine to finish its internal graph reconfiguration" — an earlier version stacked delays and the fix was to stack fewer. The right answer is to observe the engine's actual state.
+`AudioManager.attachAnalyzerSafely` uses `asyncAfter(+0.12)` (`audio_manager.swift:261-269`); `UnifiedAudioAnalyser.attach` uses `+0.15` (`:311`); `AudioPlaybackService.swift:98` uses `+0.15`. The comment at `:308-309` says the 150 ms is "enough for AVAudioEngine to finish its internal graph reconfiguration" — an earlier version stacked delays and the fix was to stack fewer. The right answer is to observe the engine's actual state.
 
 ### E9 `RingBuffer` is labelled "Lock-Free" and is not
 
@@ -829,7 +838,7 @@ The section header at `:8` says "Lock-Free Ring Buffer". `RingBuffer` is a `clas
 
 **Medium.**
 
-Zero type-level `@MainActor`, zero `nonisolated`, zero `actor`, zero `@Sendable`, zero `@unchecked Sendable` in the whole repository. Only two method-level `@MainActor` annotations exist (`View/content_view.swift:110`, `audio_manager.swift:238`). Everything else is isolated by a build setting, so `class RingBuffer` reads as plain unannotated Swift while being main-actor-bound. Document it in `AGENTS.md`.
+Zero type-level `@MainActor`, zero `nonisolated`, zero `actor`, zero `@Sendable`, zero `@unchecked Sendable` in the whole repository. Only two method-level `@MainActor` annotations exist (`View/content_view.swift:119`, `audio_manager.swift:260`). Everything else is isolated by a build setting, so `class RingBuffer` reads as plain unannotated Swift while being main-actor-bound. Document it in `AGENTS.md`.
 
 ### E11 `ThemeManager` is not `@MainActor`
 
@@ -875,10 +884,10 @@ Two structural problems sit underneath:
 
 **Exploration notes.**
 - **Ruled out:** "the `.began` branch is missing." It exists and does set `isPlaying = false` — which is why the bug is confusing to chase. The stale state is in the *published* now-playing info, not the flag.
-- **Ruled out:** "`AVAudioPlayerDelegate` cleans up the leftover state." `AudioManager` conforms at `audio_manager.swift:248` and implements `audioPlayerDidFinishPlaying` (`:249-255`), but **nothing in the codebase is an `AVAudioPlayer`** — the engine is `AVAudioEngine` + `AVAudioPlayerNode`. That delegate method is dead and can never repair this.
+- **Ruled out:** "`AVAudioPlayerDelegate` cleans up the leftover state." `AudioManager` conforms at `audio_manager.swift:270` and implements `audioPlayerDidFinishPlaying` (`:249-255`), but **nothing in the codebase is an `AVAudioPlayer`** — the engine is `AVAudioEngine` + `AVAudioPlayerNode`. That delegate method is dead and can never repair this.
 - **Ruled out:** "the route-change handler is responsible." `.oldDeviceUnavailable` (`AudioSessionService.swift:125-146`) *does* call `updateNowPlayingInfo()` and correctly declines to auto-resume. A phone call is an interruption, not a route change.
 - **To confirm:** log the interruption `type` and `options` raw values, plus `MPNowPlayingInfoCenter.default().nowPlayingInfo?["MPNowPlayingInfoPropertyPlaybackRate"]` immediately before and after a call. Expect `.ended` with an empty options set and a rate still at `1.0`.
-- **Checked, and worth stating explicitly so nobody re-checks it:** this is **not** the same trigger as [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block). A throw in `setupAudioSession` (`audio_manager.swift:87`) cannot suppress the interruption observer — `setupInterruptionObserver()` is called independently on the next line (`:90`), outside the `do`. So a failed session setup makes remote commands inert while interruptions are still handled normally. The two reports are separate bugs; do not merge their investigations.
+- **Checked, and worth stating explicitly so nobody re-checks it:** this is **not** the same trigger as [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block). A throw in `setupAudioSession` (`audio_manager.swift:95`) cannot suppress the interruption observer — `setupInterruptionObserver()` is called independently on the next line (`:90`), outside the `do`. So a failed session setup makes remote commands inert while interruptions are still handled normally. The two reports are separate bugs; do not merge their investigations.
 
 ### E15 Two racing mechanisms advance the queue, and a stale completion can skip a just-started song
 
@@ -908,7 +917,7 @@ Two further problems with mechanism 2:
 
 **Exploration notes.**
 - **Ruled out:** "there is no auto-advance at all." It is wired twice; the problem is duplication, not absence.
-- **Ruled out:** "`AVAudioPlayerDelegate` is the real completion path." `audio_manager.swift:248-255` looks like one but can never fire — no `AVAudioPlayer` exists in the project. Anyone reading `audio_manager.swift` alone will draw the wrong conclusion here.
+- **Ruled out:** "`AVAudioPlayerDelegate` is the real completion path." `audio_manager.swift:271-278` looks like one but can never fire — no `AVAudioPlayer` exists in the project. Anyone reading `audio_manager.swift` alone will draw the wrong conclusion here.
 - **Ruled out:** "the double-advance is the common cause." `stopTimer()` at `:179` normally cancels mechanism 2 in time, which is why ordinary playback behaves. The reported unreliability is more consistent with the narrow stale-callback window and the background timer throttling.
 - **To confirm:** put a `print` of the `currentlyPlayingID` at entry to `skipNextSong` with a monotonic timestamp, plus the originating mechanism. A double entry within a few milliseconds of a track end is the signature. The most reliable reproduction is pressing Next exactly as a track ends.
 - **Also check:** whether the track cuts out early — that is mechanism 2 comparing the render clock against the metadata duration, and it is a separate symptom of the same duplication.
@@ -936,7 +945,7 @@ do {
 
 If **either** `try` throws, control transfers to the `catch` at `:23`, which only prints — and **no remote command target is ever added**. The lock screen, Control Center, and headphone buttons are then permanently inert, with nothing in the log but a `print`.
 
-This is a strong candidate for the word "sometimes" in the report, because the throw is environmental rather than deterministic. `setupAudioSession()` is called from `AudioManager.init` (`audio_manager.swift:87`) **before** `engineService.initialiseEngine()` (`:88`), i.e. at launch with no file loaded and no engine running — precisely the state in which `setActive(true)` is most likely to fail.
+This is a strong candidate for the word "sometimes" in the report, because the throw is environmental rather than deterministic. `setupAudioSession()` is called from `AudioManager.init` (`audio_manager.swift:95`) **before** `engineService.initialiseEngine()` (`:88`), i.e. at launch with no file loaded and no engine running — precisely the state in which `setActive(true)` is most likely to fail.
 
 Three further defects in the same handlers, which apply even when registration succeeds:
 
@@ -950,7 +959,7 @@ Three further defects in the same handlers, which apply even when registration s
 - **Ruled out:** "the background mode is missing." `Punches3-Info.plist:4-6` declares `UIBackgroundModes: ["audio"]` and `.playback` is set at `AudioSessionService.swift:19` — a background-audio app keeps running.
 - **Ruled out:** "iOS suspends the app so the commands do not arrive." With an active `.playback` session the process is not suspended; the command does arrive, there is simply no handler.
 - **Ruled out:** "the handler is registered but the queue is empty." That would be a different symptom, and the same report would appear on **every** skip rather than *sometimes*.
-- **Checked, and worth stating explicitly so nobody re-checks it:** the interruption observer does **not** share this failure path. `setupInterruptionObserver()` is a separate call at `audio_manager.swift:90`, outside the `do`, so a thrown `setActive` skips remote-command registration but leaves interruptions handled normally. [E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing) therefore has an independent trigger — do not merge the two investigations.
+- **Checked, and worth stating explicitly so nobody re-checks it:** the interruption observer does **not** share this failure path. `setupInterruptionObserver()` is a separate call at `audio_manager.swift:98`, outside the `do`, so a thrown `setActive` skips remote-command registration but leaves interruptions handled normally. [E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing) therefore has an independent trigger — do not merge the two investigations.
 - **To confirm:** log a line on entry to `setupRemoteTransportControls`, and log the session error with its domain and code. If the line is missing on the affected launches, the `try` threw. Then verify the `playCommand` inversion independently — it should reproduce 100% of the time and is the easier of the two to confirm.
 
 ---
@@ -1019,7 +1028,7 @@ See [G1](#g1-missing-grainoverlay-shader-and-bluenoise64-asset).
 
 **Medium.**
 
-The gear is only in the Songs tab's overflow menu (`View/content_view.swift:320-322`), and that menu is itself hidden while a multi-selection is active.
+The gear is only in the Songs tab's overflow menu (`View/content_view.swift:366-368`), and that menu is itself hidden while a multi-selection is active.
 
 ### F8 Adding a setting is six unverified edits
 
@@ -1156,7 +1165,7 @@ One file in the entire repository imports it: `AudioMeters/UnifiedAudioAnalyser.
 
 **Medium.**
 
-Switching to `.Artwork` does not detach the tap, stop the 60 Hz timer, or free the ring buffers — `saveVisualisationMode()` persists the choice but nothing else reacts to it (`View/content_view.swift:302`). The DSP keeps running behind a full-screen photo.
+Switching to `.Artwork` does not detach the tap, stop the 60 Hz timer, or free the ring buffers — `saveVisualisationMode()` persists the choice but nothing else reacts to it (`View/content_view.swift:345`). The DSP keeps running behind a full-screen photo.
 
 **Fix:** on mode change to `.Artwork`, invalidate the timer and remove the tap; re-attach on the way back.
 
@@ -1200,7 +1209,7 @@ Switching to `.Artwork` does not detach the tap, stop the 60 Hz timer, or free t
 
 **Phase 6 — cleanup.**
 
-20. Delete [D5](#d5-spectrumview-has-zero-call-sites), [D8](#d8-the-32-band-analyser-output-is-unused), [D9](#d9-commented-out-visualisation-modes), [B11](#b11-contentviewshareurl-is-dead-code), [A8](#a8-workspace-file-is-copied-into-the-app-bundle), the dead `@State volume`, the `AVAudioPlayerDelegate` conformance on `AudioManager` (`audio_manager.swift:248-255`, unreachable — see [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song)), and the `#if DEBUG` timing wrapper's per-callback syscall.
+20. Delete [D5](#d5-spectrumview-has-zero-call-sites), [D8](#d8-the-32-band-analyser-output-is-unused), [D9](#d9-commented-out-visualisation-modes), [B11](#b11-contentviewshareurl-is-dead-code), [A8](#a8-workspace-file-is-copied-into-the-app-bundle), the dead `@State volume`, the `AVAudioPlayerDelegate` conformance on `AudioManager` (`audio_manager.swift:270-278`, unreachable — see [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song)), and the `#if DEBUG` timing wrapper's per-callback syscall.
 21. Fix [D10](#d10-the-root-readmemd-requirements-are-wrong-by-a-decade) — the root README actively misleads anyone trying to build this.
 
 ---
