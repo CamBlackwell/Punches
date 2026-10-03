@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 /// Why a source file could not be imported.
@@ -13,6 +14,8 @@ enum ImportFailure: String, Hashable, CaseIterable, LocalizedError {
     case cloudNotDownloaded
     /// AVFoundation could not read a duration — unsupported or damaged.
     case unsupportedCodec
+    /// The container is one iOS has no decoder for (OGG, WMA, APE, …).
+    case unsupportedContainer
     /// FairPlay-protected; not playable outside its store.
     case drmProtected
     /// Readable, but reported as not playable.
@@ -27,13 +30,20 @@ enum ImportFailure: String, Hashable, CaseIterable, LocalizedError {
     case diskFull
     /// The source changed while it was being read.
     case sourceChanged
+    /// The library database refused the write. Not a problem with the file.
+    case libraryUnavailable
+    /// The file could not be copied or coordinated into `Staging/`.
+    case copyFailed
+    /// Something failed that has no mapping. The underlying error is the report.
+    case unknown
     case cancelled
 
     var title: String {
         switch self {
         case .noPermission: return "No permission"
         case .cloudNotDownloaded: return "Still downloading"
-        case .unsupportedCodec: return "Unsupported format"
+        case .unsupportedCodec: return "Could not be decoded"
+        case .unsupportedContainer: return "Unsupported format"
         case .drmProtected: return "Protected file"
         case .notPlayable: return "Not playable"
         case .invalidDuration: return "Damaged file"
@@ -41,6 +51,9 @@ enum ImportFailure: String, Hashable, CaseIterable, LocalizedError {
         case .duplicate: return "Already added"
         case .diskFull: return "No space left"
         case .sourceChanged: return "File changed while copying"
+        case .libraryUnavailable: return "Library could not save"
+        case .copyFailed: return "Could not be copied"
+        case .unknown: return "Import failed"
         case .cancelled: return "Cancelled"
         }
     }
@@ -53,6 +66,8 @@ enum ImportFailure: String, Hashable, CaseIterable, LocalizedError {
             return "This file lives in iCloud Drive and had not finished downloading."
         case .unsupportedCodec:
             return "This device could not decode the audio format."
+        case .unsupportedContainer:
+            return "iOS has no decoder for this kind of file. Try an MP3, M4A, AAC, ALAC, WAV, AIFF, CAF or FLAC."
         case .drmProtected:
             return "This track is protected by DRM and cannot be copied."
         case .notPlayable:
@@ -67,6 +82,12 @@ enum ImportFailure: String, Hashable, CaseIterable, LocalizedError {
             return "There was not enough free space to finish the import."
         case .sourceChanged:
             return "The file was modified while it was being read."
+        case .libraryUnavailable:
+            return "The library database could not be written. This is not a problem with the file."
+        case .copyFailed:
+            return "The file could not be copied into the library."
+        case .unknown:
+            return "Something went wrong that has not been identified yet."
         case .cancelled:
             return "The import was cancelled."
         }
@@ -79,13 +100,61 @@ enum ImportFailure: String, Hashable, CaseIterable, LocalizedError {
     var errorDescription: String? { detail }
 
     /// Classifies a thrown error, so callers do not have to.
+    ///
+    /// ## Why this used to be wrong
+    ///
+    /// Every error whose domain was not `NSCocoaErrorDomain` was reported as
+    /// `unsupportedCodec`, as was every unrecognised Cocoa code. A SQLite
+    /// failure, a `NSFileCoordinator` failure, a POSIX `errno` and a Swift
+    /// decoding error were therefore all reported to the user as
+    /// *"Unsupported format"* — telling them their file was at fault when the
+    /// fault was ours. That is the exact misdiagnosis this enum was written to
+    /// end, and it is what made the extension-less import bug
+    /// ([C16](14-known-issues.md#c16-a-file-with-no-extension-could-never-be-imported-and-every-failure-was-reported-as-unsupported-format))
+    /// so hard to find: the one symptom the app could show was a lie.
+    ///
+    /// `unsupportedCodec` is now only ever returned on positive evidence that
+    /// the decoder refused the bytes. Anything unrecognised is `.unknown`, which
+    /// keeps `FailedImport.underlying` — the actual error — as the thing the
+    /// user and the log are shown.
     static func classify(_ error: Error) -> ImportFailure {
         if let failure = error as? ImportFailure { return failure }
+        if error is LibraryStoreError { return .libraryUnavailable }
 
         let nsError = error as NSError
-        guard nsError.domain == NSCocoaErrorDomain else {
-            return .unsupportedCodec
+
+        // A codec verdict may only come from the framework that does the decoding.
+        if nsError.domain == AVFoundationErrorDomain {
+            switch AVError.Code(rawValue: nsError.code) {
+            case .fileFormatNotRecognized, .decodeFailed,
+                 .fileFailedToParse, .invalidSourceMedia:
+                return .unsupportedCodec
+            case .contentIsProtected, .contentIsNotAuthorized,
+                 .applicationIsNotAuthorized:
+                return .drmProtected
+            case .diskFull:
+                return .diskFull
+            default:
+                return .unknown
+            }
         }
+
+        // `NSFileCoordinatorErrorDomain` is not surfaced to Swift, so it is matched by
+        // value. `NSFileCoordinator` is what `stage` reads and writes through.
+        if nsError.domain == "NSFileCoordinatorErrorDomain" {
+            return .copyFailed
+        }
+
+        if nsError.domain == NSPOSIXErrorDomain {
+            switch nsError.code {
+            case Int(ENOENT): return .sourceVanished
+            case Int(EACCES), Int(EPERM): return .noPermission
+            case Int(ENOSPC): return .diskFull
+            default: return .unknown
+            }
+        }
+
+        guard nsError.domain == NSCocoaErrorDomain else { return .unknown }
 
         switch nsError.code {
         case NSFileReadNoPermissionError:
@@ -98,10 +167,8 @@ enum ImportFailure: String, Hashable, CaseIterable, LocalizedError {
             return .duplicate
         case NSFileReadCorruptFileError, NSFileReadInvalidFileNameError:
             return .unsupportedCodec
-        case NSFileReadUnknownError:
-            return .unsupportedCodec
         default:
-            return .unsupportedCodec
+            return .unknown
         }
     }
 }
@@ -170,10 +237,16 @@ struct ImportReport: Identifiable {
     }
 
     /// Failure counts grouped for display, most frequent first.
-    var groupedFailures: [(failure: ImportFailure, names: [String])] {
+    /// Failures grouped by cause, most frequent first.
+    ///
+    /// Carries the whole `FailedImport` rather than just its name, because the
+    /// `underlying` reason is what makes a group actionable — "Unsupported
+    /// format" alone cannot distinguish "this OGG has no iOS decoder" from "the
+    /// copy failed" from "the database rejected the write".
+    var groupedFailures: [(failure: ImportFailure, failures: [FailedImport])] {
         Dictionary(grouping: failed, by: \.failure)
-            .map { (failure: $0.key, names: $0.value.map(\.name)) }
-            .sorted { $0.names.count > $1.names.count }
+            .map { (failure: $0.key, failures: $0.value) }
+            .sorted { $0.failures.count > $1.failures.count }
     }
 
     mutating func merge(_ other: ImportReport) {

@@ -36,18 +36,28 @@ struct ImportReportView: View {
 
                 ForEach(Array(report.groupedFailures.enumerated()), id: \.offset) { _, group in
                     Section {
-                        ForEach(group.names, id: \.self) { name in
+                        ForEach(group.failures, id: \.self) { failed in
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(name)
+                                Text(failed.name)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                                 Text(group.failure.detail)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                // The error the pipeline actually threw. The
+                                // cause above is a category, and for a category
+                                // like "Something went wrong that has not been
+                                // identified yet" this line is the whole answer.
+                                if let reason = failed.underlying, !reason.isEmpty {
+                                    Text(reason)
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                        .textSelection(.enabled)
+                                }
                             }
                         }
                     } header: {
-                        Text("\(group.failure.title) — \(group.names.count)")
+                        Text("\(group.failure.title) — \(group.failures.count)")
                     } footer: {
                         if group.failure == .cloudNotDownloaded {
                             Text("Download the file in Files, then add it again.")

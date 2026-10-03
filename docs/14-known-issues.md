@@ -6,7 +6,7 @@ A severity-ranked register of every defect, dead path, and documentation error f
 
 > **What the merge changed.** `laptop` added the SQLite-backed library (`LibraryStore`, `LibrarySchema`, `LibraryMigration`, `LibraryReconciler`, `LibraryImportPipeline`, `LibraryImportReport`, `LibraryEnvironment`) and bound the four synchronized folders to the target. **C1**, **C2**, **C3**/**E6**, **C12** and **G1**/**A4**/**G1.3** are addressed by that work and are now historical. The merge itself required a follow-up commit to make the branch compile at all — see that commit for the 20 defects it carried.
 >
-> **What compiling did not catch.** A second follow-up commit was needed after that, for [C15](#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran): the library layer built cleanly and then did nothing at runtime, because `exec` prepared every statement and never stepped it. Four entries in section C were verified against a database that could not be written — see C15's closing note.
+> **What compiling did not catch.** A second follow-up commit was needed after that, for [C15](#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran): the library layer built cleanly and then did nothing at runtime, because `exec` prepared every statement and never stepped it. Four entries in section C were verified against a database that could not be written — see C15's closing note. A third follow-up commit fixed [C16](#c16-a-file-with-no-extension-could-never-be-imported-and-every-failure-was-reported-as-unsupported-format): with the database finally writable, imports reached the validation step and failed there, and the one message the app could show turned out to be unrelated to the cause.
 
 > **About the Exploration notes.** Entries carry an **Exploration notes** block recording the hypotheses that have already been ruled out, the instrumentation that would confirm or refute the rest, and any trap for the next person to look. This exists so that a hypothesis is not re-investigated from scratch, and so that a *failed* approach is as visible as a successful one. If you test one of these, update the block — including when the test shows the entry is **wrong**. One entry has already been corrected that way: [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue) previously claimed a variable had no readers anywhere, which was false. All Critical and High entries carry the block; the Medium and Low set does not yet, and should be filled in as each is picked up.
 
@@ -25,11 +25,11 @@ A severity-ranked register of every defect, dead path, and documentation error f
 
 | Severity | Count |
 |---|---|
-| Critical | 14 |
+| Critical | 15 |
 | High | 32 |
 | Medium | 28 |
 | Low | 18 |
-| **Total** | **92** |
+| **Total** | **93** |
 
 The table counts entries, not distinct defects: [A3](#a3-app-group-entitlement-is-empty) and [B1](#b1-app-group-entitlement-is-empty) are the same root cause documented from the build side and the import side, and several entries share a single fix.
 
@@ -45,6 +45,7 @@ User-reported symptoms and the entries that explain them. A single report can ha
 | *"Songs should default to the top of the list, not the bottom."* | [C13](#c13-the-app-opens-on-the-oldest-import-not-the-top-of-the-list) · [C14](#c14-manual-sort-order-is-silently-discarded) | The sort is correct. C13 is the unsorted `audioFiles.first` fallback used for the default selection; C14 is manual order being discarded on recompute. |
 | *"There is no effective metadata integration."* | [D14](#d14-no-metadata-is-read-anywhere-the-title-is-the-filename) · [C8](#c8-the-two-audiofiletitle-fallbacks-disagree) | D14 is the whole gap: the model has no fields for artist/album/genre and nothing reads tags. C8 is why even the filename-derived title is inconsistent — the two `AudioFile` initialisers disagree about stripping the extension. |
 | *"Songs sometimes don't skip when out of the app."* | [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block) · [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) | E16 is the "sometimes": if `setActive` throws at launch, no remote handler is ever registered. E15's background timer throttling is the other half. |
+| *"it now pops up with an error when importing, however all audio types come up with the message that they are unsupported format"* | [C16](#c16-a-file-with-no-extension-could-never-be-imported-and-every-failure-was-reported-as-unsupported-format) | C16 is both causes at once: a staged file that lost its extension so `AVURLAsset` could not open it, and a `classify` that reported every error as an unsupported codec. "All audio types" is the tell — a real codec limit is format-specific, a filename problem is not. |
 | *"When I add a song it is not shown on the songs list view after I add it."* | [C15](#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran) · [C13](#c13-the-app-opens-on-the-oldest-import-not-the-top-of-the-list) | C15 was the whole cause: no write in the library layer had ever executed, so the import aborted before it could refresh `displayedSongs`. Fixed. C13 carries a second, independent path to the same symptom — a `displayedSongs` refresh trapped inside the master-playlist guard — and is still open. |
 
 ---
@@ -597,6 +598,50 @@ One more silent failure was fixed alongside it. `LibraryImportPipeline.importAud
 - **Trap:** a green build is not evidence here, and neither is a green test run — [A2](#a2-both-test-targets-are-empty) is still open, so `xcodebuild test` reports zero tests and reads as a pass. This defect compiled, linked, launched and installed without complaint.
 - **To confirm any future persistence claim:** query the file directly rather than trusting the app — `sqlite3 <container>/Documents/Punches/library.sqlite "SELECT name FROM sqlite_master"`. Before this fix it returned nothing at all.
 - **Note:** this entry invalidates the *evidence* for [C1](#c1-master-playlist-recovery-destroys-every-user-playlist), [C2](#c2-cleanuporphanedfiles-deletes-untracked-files), [C3](#c3-taskdetached-races-saveplaylists-on-the-same-key) and [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see), not their conclusions. Those four are still fixed — the destructive code is genuinely gone — but their claims about transactional, atomic persistence were verified against a database that could not be written, and C12's *"nothing is deleted on launch"* held only because the read it depends on threw.
+
+### C16 A file with no extension could never be imported, and every failure was reported as "Unsupported format"
+
+**Critical — fixed.**
+
+Two defects compounded. The first made the import fail; the second hid why, which is why it survived two reports.
+
+**1. The staged file lost its extension, and `AVURLAsset` requires one.** `stage` renamed the staged copy to the job UUID:
+
+```swift
+// Services/LibraryImportPipeline.swift:472, before the fix
+let ext = url.pathExtension
+let name = ext.isEmpty ? jobID.uuidString : "\(jobID.uuidString).\(ext)"
+```
+
+When the picker's URL has an empty `pathExtension`, `name` is a bare UUID with no extension — and the next step, `validate`, opened it with `AVURLAsset`, which selects its demuxer *from the filename*. It fails with `AVError.fileFormatNotRecognized` (`-11828`). `validate` caught every error from that load and rethrew `.unsupportedCodec` unconditionally, so the file was reported as an unsupported format no matter what it actually was.
+
+> **User report:** *"it now pops up with an error when importing, however all audio types come up with the message that they are unsupported format."* All of them, of every format — which is the signature of a filename problem rather than a codec problem, since a codec problem is format-specific.
+
+**Measured, before the fix:** the same real AAC file, named normally and named as a bare UUID, through the three opening APIs AVFoundation offers:
+
+| API | `<uuid>.m4a` | `<uuid>` (no extension) |
+|---|---|---|
+| `AVURLAsset.load(.duration)` | passes | **fails** `AVError -11828` |
+| `AVAudioFile(forReading:)` | passes | **passes** — sniffs the content |
+| `AVAudioPlayer(contentsOf:)` | passes | **passes** |
+
+`AppleAudioEngine.swift:178` already used `AVAudioFile`, which is why this presented as an import failure rather than a playback failure: the one place that needed the filename was the one place that had thrown it away.
+
+**2. `ImportFailure.classify` mapped everything to "Unsupported format".** It returned `.unsupportedCodec` for *every* error whose domain was not `NSCocoaErrorDomain`, and for *every* unrecognised Cocoa code. A SQLite failure, an `NSFileCoordinator` failure, a POSIX `errno` and a Swift decoding error were all reported to the user as a statement about their file. The pipeline captured the real reason in `FailedImport.underlying` and logged it, then rendered only the canned `detail` in the report sheet — so the one useful datum was collected and discarded in the same function.
+
+**Fix, in three parts.**
+- `validate` now opens with `AVAudioFile(forReading:)`, which identifies the container from the content and so no longer depends on the filename. It returns a `Probe` carrying duration, sample rate and channel count, and it subsumes the old separate `isPlayable` probe: a file that opens at all is one this device can decode.
+- `stage` keeps the source's extension when it has one and otherwise takes it from `AudioContainer.fileExtension(ofContentsAt:)`, a new magic-byte sniffer, so the **stored** file keeps a usable extension too. This matters beyond validation: `urlForSharing` hands the live file to other apps, and a recipient that keys off the extension rejects it.
+- `classify` now maps by domain and code — `AVFoundationErrorDomain`, `NSFileCoordinatorErrorDomain`, `NSPOSIXErrorDomain`, `LibraryStoreError` — with new cases `.libraryUnavailable`, `.copyFailed` and `.unknown`. `.unsupportedCodec` is reachable **only** on positive evidence that the decoder refused the bytes. `ImportReportView` renders `underlying` under each failure, and the pipeline logs domain and code alongside `localizedDescription`, which is the same string for a dozen unrelated failures.
+
+**Verified.** A harness compiled from the real `LibraryImportPipeline` / `LibraryStore` / `LibrarySchema` / `AudioContainer` sources imported an extension-less AAC file, a normally-named AAC file, and an OGG through the real pipeline. The extension-less file committed, was stored as `<uuid>.m4a` (extension recovered from the bytes), reopened by content at 0.87 s, and produced a database row; the OGG was refused as `.unsupportedContainer` with the format named; nothing was reported as `.unsupportedCodec`. The sniffer was separately checked against 15 header vectors covering WAV, AIFF, CAF, FLAC, MP3 (tagged and raw), M4A, M4B, a generic `isom` MP4, AMR, OGG, WMA, a text file, and two real files with and without extensions.
+
+**Exploration notes.**
+- **Ruled out:** "the picker hands back an unusable URL." `.audio` and `allowsMultipleSelection` in `DocumentPicker` (`content_view.swift:1681`) are fine; the extension is empty for some providers, not for all, which is why the failure looked format-related.
+- **Ruled out:** "`stage` renames the file and something downstream still expects the original name." Nothing downstream does; the UUID name is the design, for collision safety.
+- **Ruled out:** "`validate` rejecting a legitimate file because of its duration." The duration load succeeds on a correctly-named copy; only the name was at fault.
+- **Trap:** `classify` returning `.unsupportedCodec` is not evidence that the codec is unsupported. That is the whole defect — the symptom was a lie, and the `underlying` string that would have exposed it was already in memory and never displayed.
+- **Trap:** iOS genuinely cannot decode OGG/Vorbis, Opus-in-Ogg, WMA, APE, or most video containers. `AudioContainer` identifies those *by name* so the refusal can be specific, but identification is not decode capability — `AVAudioFile` remains the authority, and `decodableExtensions` is a deliberate second opinion, not a replacement.
 
 ---
 

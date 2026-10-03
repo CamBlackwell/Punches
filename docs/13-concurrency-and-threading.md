@@ -281,7 +281,7 @@ The natural improvement is a dedicated `DispatchSourceTimer` on a serial queue t
 | 2 | **Critical** | `writeToRingBuffer` is called from the RT thread but the type is main-actor-isolated; violation unobserved only because the target does not compile | [§4](#4-the-real-time-thread-allocates) |
 | 3 | **High** | The documented `generation` cancellation gate is never wired up; a stale 150 ms `asyncAfter` can install a tap on the wrong engine | [§5](#5-the-two-documented-safeguards-that-are-not-implemented) |
 | 4 | **High** | `withCheckedThrowingContinuation` has two unguarded `resume` paths → double-resume trap | [§8](#8-structured-concurrency-one-continuation-double-resume-hazard) |
-| 5 | **High** | ~~`Task.detached` and `savePlaylists()` race on the same `UserDefaults` key → silent playlist loss~~ **RESOLVED** in the working tree; no serial write queue for the other keys ([C9](14-known-issues.md#c9-no-serial-write-queue-for-userdefaults)) remains | [§9](#9-taskdetached-racing-userdefaults--resolved) |
+| 5 | **High** | ~~`Task.detached` and `savePlaylists()` race on the same `UserDefaults` key → silent playlist loss~~ **RESOLVED** in the working tree; no serial write queue for the other keys ([C9](14-known-issues.md#c9-no-serial-write-queue-for-userdefaults)) remains | [§9](#9-taskdetached-racing-userdefaults-resolved) |
 | 6 | Medium | Isolation is invisible: 0 type-level `@MainActor`, 0 `Sendable`, 0 `nonisolated` | [§2](#2-isolation-comes-from-a-build-setting-not-the-source) |
 | 7 | Medium | `RingBuffer` is labelled "Lock-Free" and uses `NSLock` | [§6](#6-locking) |
 | 8 | Medium | `reorderPlaylistSongs` mutates main state across an unnecessary hop, capturing `index` by value | [§7](#7-hopping-to-main) |

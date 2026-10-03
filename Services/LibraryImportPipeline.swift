@@ -255,7 +255,7 @@ final class LibraryImportPipeline {
             try store.updateImportJob(jobID!, state: .staged, stagedName: staged.lastPathComponent)
 
             // 6. Validate.
-            let duration = try await validate(staged)
+            let probe = try validate(staged)
             try store.updateImportJob(jobID!, state: .validated)
 
             // 7. Promote to the library directory, *then* commit the row.
@@ -270,9 +270,11 @@ final class LibraryImportPipeline {
                 fileName: trackURL.lastPathComponent,
                 sourceName: sourceName,
                 displayTitle: (sourceName as NSString).deletingPathExtension,
-                ext: url.pathExtension,
+                // The stored file's own extension, which `stage` may have identified from the
+                // content when the source had none.
+                ext: trackURL.pathExtension,
                 byteSize: Self.byteSize(of: trackURL),
-                duration: duration,
+                duration: probe.duration,
                 dateAdded: Date(),
                 artworkName: nil,
                 originBookmark: refreshed ?? bookmark,
@@ -296,9 +298,14 @@ final class LibraryImportPipeline {
         } catch {
             let failure = ImportFailure.classify(error)
             let reason = error.localizedDescription
+            // Domain and code, because `localizedDescription` is the same string
+            // for a dozen unrelated failures and was the reason this took two
+            // reports and a probe to find.
+            let nsError = error as NSError
+            let tagged = "\(reason) [\(nsError.domain) \(nsError.code)]"
 
             if let jobID {
-                try? store.rejectImport(jobID: jobID, sourceName: sourceName, reason: reason)
+                try? store.rejectImport(jobID: jobID, sourceName: sourceName, reason: tagged)
             }
 
             // The user's original file is never touched. Our staged copy, if
@@ -309,14 +316,14 @@ final class LibraryImportPipeline {
             }
 
             Self.logger.error(
-                "Import of \(sourceName, privacy: .public) failed [\(failure.rawValue, privacy: .public)]: \(reason, privacy: .public)"
+                "Import of \(sourceName, privacy: .public) failed [\(failure.rawValue, privacy: .public)]: \(tagged, privacy: .public)"
             )
 
             await MainActor.run {
                 // Read-modify-write; see `projectOntoUI`.
                 var report = self.manager.lastImportReport ?? ImportReport()
                 report.failed.append(
-                    FailedImport(name: sourceName, failure: failure, underlying: reason)
+                    FailedImport(name: sourceName, failure: failure, underlying: tagged)
                 )
                 self.manager.lastImportReport = report
                 self.manager.finishOneImport()
@@ -375,7 +382,7 @@ final class LibraryImportPipeline {
             }
             try FileManager.default.moveItem(at: inbound.url, to: staged)
 
-            let duration = try await validate(staged)
+            let probe = try validate(staged)
             let trackURL = try promote(staged: staged, jobID: inbound.id)
 
             let record = TrackRecord(
@@ -385,7 +392,7 @@ final class LibraryImportPipeline {
                 displayTitle: ((inbound.originalName as NSString).deletingPathExtension),
                 ext: ext,
                 byteSize: Self.byteSize(of: trackURL),
-                duration: duration,
+                duration: probe.duration,
                 dateAdded: Date(),
                 artworkName: nil,
                 originBookmark: nil,
@@ -469,7 +476,7 @@ final class LibraryImportPipeline {
     /// two `Intro.mp3`s in one selection cannot collide — which is what made the
     /// old `generateUniqueFileName` race fail.
     private func stage(from url: URL, jobID: UUID) async throws -> URL {
-        let ext = url.pathExtension
+        let ext = Self.stagedFileExtension(for: url)
         let name = ext.isEmpty ? jobID.uuidString : "\(jobID.uuidString).\(ext)"
         let partial = environment.staging.appendingPathComponent("\(name).partial")
         let final = environment.staging.appendingPathComponent(name)
@@ -514,6 +521,25 @@ final class LibraryImportPipeline {
         return final
     }
 
+    /// The extension the staged copy must carry for AVFoundation to open it.
+    ///
+    /// Prefers the source's own extension. When the source has none — a picker
+    /// URL with an empty `pathExtension` — the container is identified from the
+    /// bytes instead, because `AVURLAsset` cannot open an extension-less file
+    /// at all. Without this, renaming such a source to a bare job UUID produced a
+    /// filename no decoder would accept, and *every* file from that source was
+    /// refused as "Unsupported format".
+    ///
+    /// Returns an empty string only when the content matches nothing known. That
+    /// is not a failure here: `validate` still opens the file by content, so a
+    /// format AVFoundation understands but the sniffer does not know is imported
+    /// normally. It only means the stored file keeps an extension-less name.
+    private static func stagedFileExtension(for url: URL) -> String {
+        let fromName = url.pathExtension.lowercased()
+        guard fromName.isEmpty else { return fromName }
+        return AudioContainer.fileExtension(ofContentsAt: url) ?? ""
+    }
+
     /// Renames a staged file into the library directory.
     ///
     /// Destination names are job-scoped UUIDs, so a file already sitting there
@@ -531,25 +557,58 @@ final class LibraryImportPipeline {
         return destination
     }
 
-    private func validate(_ url: URL) async throws -> Float {
-        let asset = AVURLAsset(url: url)
+    /// What opening a file tells us, before anything is written for it.
+    private struct Probe {
+        var duration: Float
+        var sampleRate: Double
+        var channelCount: AVAudioChannelCount
+    }
 
-        let duration: CMTime
-        do {
-            duration = try await asset.load(.duration)
-        } catch {
-            throw ImportFailure.unsupportedCodec
+    /// Opens `url` and reads what the commit needs from it.
+    ///
+    /// Uses `AVAudioFile`, **not** `AVURLAsset`. Both read duration, but
+    /// `AVURLAsset` selects its demuxer from the filename and fails with
+    /// `AVError.fileFormatNotRecognized` on a file with no extension, whereas
+    /// `AVAudioFile` identifies the container from the content. Since the staged
+    /// copy is named after the job id, that difference is the whole bug: a source
+    /// URL with an empty `pathExtension` could never be validated, and was
+    /// reported as an unsupported codec.
+    ///
+    /// `AVAudioFile` also subsumes the old separate `isPlayable` probe — a file
+    /// that opens at all is one this device can decode.
+    private func validate(_ url: URL) throws -> Probe {
+        // Name the container when it is identifiable, so a refusal can say
+        // *which* format rather than "unsupported".
+        let container = url.pathExtension.isEmpty
+            ? AudioContainer.fileExtension(ofContentsAt: url)
+            : url.pathExtension.lowercased()
+
+        if let container, !AudioContainer.isDecodable(container) {
+            throw ImportFailure.unsupportedContainer
         }
 
-        let seconds = Float(CMTimeGetSeconds(duration))
+        let file: AVAudioFile
+        do {
+            file = try AVAudioFile(forReading: url)
+        } catch {
+            // Propagated rather than collapsed, so `ImportFailure.classify` can
+            // map the real AVFoundation / OSStatus code to an accurate reason.
+            throw error
+        }
+
+        let sampleRate = file.processingFormat.sampleRate
+        guard sampleRate > 0 else { throw ImportFailure.invalidDuration }
+
+        let seconds = Float(Double(file.length) / sampleRate)
         guard seconds > 0, seconds.isFinite else {
             throw ImportFailure.invalidDuration
         }
 
-        let playable = (try? await asset.load(.isPlayable)) ?? true
-        guard playable else { throw ImportFailure.notPlayable }
-
-        return seconds
+        return Probe(
+            duration: seconds,
+            sampleRate: sampleRate,
+            channelCount: file.processingFormat.channelCount
+        )
     }
 
     // MARK: - Projection
