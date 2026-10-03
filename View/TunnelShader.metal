@@ -103,7 +103,8 @@ static half3 tunnelPalette(half t, half3 a, half3 b, half3 c, half3 d) {
     float speed,
     float intensity,
     float qualitySteps,      // e.g. 60 (low) ... 200 (high)
-    float qualityFolds       // e.g. 5 (low) ... 9 (high)
+    float qualityFolds,       // e.g. 5 (low) ... 9 (high)
+    texture2d blueNoise       // 64x64 tiling noise, for the dither below
 ) {
     half2 uv = half2((position - 0.5 * size) / size.y);
     half t = half(time * speed);
@@ -143,5 +144,38 @@ static half3 tunnelPalette(half t, half3 a, half3 b, half3 c, half3 d) {
     col = pow(col, half3(0.4545h)); // gamma correction
     col = clamp(col * half(intensity), 0.0h, 1.0h);
 
+    // Tiled blue-noise dither before quantisation. The raymarched gradients are
+    // very shallow over long stretches, which is exactly where 8-bit output
+    // bands; a sub-LSB noise offset removes it. One linear-filtered tap on a
+    // 64x64 tile, so the repeat is not perceptible at this amplitude.
+    constexpr sampler blueNoiseSampler(blueNoise::address::repeat, blueNoise::filter::linear);
+    half3 dither = half3(blueNoise.sample(blueNoiseSampler, position / 64.0h).rgb - 0.5h);
+    col = clamp(col + dither * (1.0h / 255.0h), 0.0h, 1.0h);
+
     return half4(col, color.a);
+}
+
+// ============================================================================
+// grainOverlay
+//
+// A one-tap blue-noise grain pass. Applied as a second `colorEffect` over the
+// tunnel so the grain lands at full resolution, *after* the low-res buffer has
+// been scaled up — applying it inside the raymarched pass would smear the
+// grain along with everything else.
+//
+// `position` and `color` are supplied by SwiftUI and must stay as the first two
+// parameters; only the trailing arguments are passed at the call site.
+// ----------------------------------------------------------------------------
+[[ stitchable ]] half4 grainOverlay(
+    float2 position,
+    half4 color,
+    texture2d blueNoise,
+    float strength
+) {
+    constexpr sampler blueNoiseSampler(blueNoise::address::repeat, blueNoise::filter::linear);
+    half2 uv = position / 64.0h;
+    half3 grain = half3(blueNoise.sample(blueNoiseSampler, uv).rgb - 0.5h);
+
+    half3 out_ = color.rgb + grain * clamp(strength, 0.0h, 1.0h);
+    return half4(clamp(out_, 0.0h, 1.0h), color.a);
 }

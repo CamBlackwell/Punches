@@ -666,6 +666,11 @@ extension View {
             .sheet(isPresented: showingFilePicker) {
                 DocumentPicker(audioManager: audioManager)
             }
+            .sheet(item: importReportBinding(audioManager)) { report in
+                ImportReportView(report: report) {
+                    audioManager.importReportToPresent = nil
+                }
+            }
             .sheet(isPresented: showingShareSheet) {
                 if let url = shareURL.wrappedValue {
                     ShareSheet(activityItems: [url])
@@ -689,6 +694,20 @@ extension View {
                     }
                 }
             }
+    }
+
+    /// Lifts the manager's optional report into a `Binding` for `.sheet(item:)`.
+    ///
+    /// `applySheets` receives the manager as a plain value rather than an
+    /// `@ObservedObject`, so `$audioManager` is not available here; a manual
+    /// binding avoids changing that signature.
+    private func importReportBinding(
+        _ audioManager: AudioManager
+    ) -> Binding<ImportReport?> {
+        Binding(
+            get: { audioManager.importReportToPresent },
+            set: { audioManager.importReportToPresent = $0 }
+        )
     }
 
     func applyAlerts(
