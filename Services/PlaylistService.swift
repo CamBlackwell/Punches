@@ -128,13 +128,29 @@ final class PlaylistService {
     /// A missing master is a one-row problem, so it is now repaired as one: a
     /// fresh master id, the existing playlists untouched, and full membership
     /// re-derived from the track table.
+    ///
+    /// ## Why a new master is always written back
+    ///
+    /// The membership repair below only saved when it changed something, which
+    /// meant the master row reached the database by accident or not at all. On an
+    /// empty library a freshly created master has no members and there are no
+    /// tracks, so `present == expected`, the guard returned early, and the row was
+    /// never written. `manager.masterPlaylistID` then named a playlist that
+    /// existed only in memory, and the *first import on a brand-new install*
+    /// failed to add a membership row for it.
+    ///
+    /// Membership repair is still conditional — it has nothing to do when the two
+    /// sets already agree — so the save is driven off whether a master was
+    /// actually created, and the repair piggybacks on it.
     func loadOrCreateMasterPlaylist() {
         var masterID = manager.masterPlaylistID
+        var createdMaster = false
 
         if masterID == nil || !manager.playlists.contains(where: { $0.id == masterID }) {
             let fresh = Playlist(name: "__MASTER_SONGS__")
             masterID = fresh.id
             manager.playlists.append(fresh)
+            createdMaster = true
         }
         manager.masterPlaylistID = masterID
 
@@ -146,7 +162,12 @@ final class PlaylistService {
 
         let expected = Set(manager.audioFiles.map(\.id))
         let present = Set(manager.playlists[index].audioFileIDs)
-        guard present != expected else { return }
+        guard present != expected else {
+            // Nothing to repair, but a master created a moment ago still has to
+            // exist on disk before anything can reference it.
+            if createdMaster { savePlaylists() }
+            return
+        }
 
         var repaired = manager.playlists[index].audioFileIDs.filter(expected.contains)
         let additions = manager.audioFiles.filter { !present.contains($0.id) }

@@ -482,9 +482,24 @@ final class LibraryStore: @unchecked Sendable {
         }
     }
 
+    /// The master playlist id, or `nil` when there is no live master.
+    ///
+    /// Joins against `playlist` rather than reading `meta` alone. `meta` holds the
+    /// pointer as text and cannot cascade when the row is deleted, so it can name
+    /// a playlist that is gone. Handing that id back would push it into
+    /// `commitImport`, where it cannot resolve — and the caller has no way to tell
+    /// "no master configured" from "master configured but missing", so it would
+    /// have no choice but to trust it. Returning `nil` instead lets the caller do
+    /// what it already does for a missing master: create one.
     func loadMasterPlaylistID() throws -> UUID? {
         try withLock {
-            try query("SELECT value FROM meta WHERE key = 'master_playlist_id';") { stmt in
+            try query(
+                """
+                SELECT m.value FROM meta AS m
+                JOIN playlist AS p ON p.id = m.value
+                WHERE m.key = 'master_playlist_id';
+                """
+            ) { stmt in
                 guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
                 guard let text = Self.text(stmt, 0) else { return nil }
                 return UUID(uuidString: text)
@@ -499,6 +514,10 @@ final class LibraryStore: @unchecked Sendable {
     /// This replaces two independent `UserDefaults` writes, which is what let an
     /// imported track exist in the file list while its id was in no playlist —
     /// present on disk, invisible in the UI, forever.
+    ///
+    /// This is a *mirror*, so it both creates and destroys rows: `prune` deletes
+    /// anything the projection omits. That is why the master pointer is retracted
+    /// when the row it names did not survive — see `clearMasterPlaylistID`.
     func persist(_ snapshot: LibrarySnapshot) throws {
         try withLock {
             try withTransaction {
@@ -519,17 +538,49 @@ final class LibraryStore: @unchecked Sendable {
                 }
                 try prune(table: "playlist", keeping: playlistIDs)
 
-                if let master = snapshot.masterPlaylistID {
-                    try exec(
-                        """
-                        INSERT INTO meta (key, value) VALUES ('master_playlist_id', ?)
-                        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-                        """,
-                        bindings: [.text(master.uuidString)]
-                    )
+                if let master = snapshot.masterPlaylistID,
+                   try playlistExists(master) {
+                    try writeMasterPlaylistID(master)
+                } else {
+                    try clearMasterPlaylistID()
                 }
             }
         }
+    }
+
+    private func playlistExists(_ id: UUID) throws -> Bool {
+        try scalarInt(
+            "SELECT EXISTS (SELECT 1 FROM playlist WHERE id = ?);",
+            bindings: [.text(id.uuidString)]
+        ) == 1
+    }
+
+    private func writeMasterPlaylistID(_ id: UUID) throws {
+        try exec(
+            """
+            INSERT INTO meta (key, value) VALUES ('master_playlist_id', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """,
+            bindings: [.text(id.uuidString)]
+        )
+    }
+
+    /// Retracts the master pointer.
+    ///
+    /// Deleting a `playlist` row does **not** cascade into `meta`, which stores
+    /// the pointer as an opaque string in a key/value table rather than a
+    /// foreign key. So `prune(table: "playlist")` could delete the master while
+    /// the pointer survived, and every later launch would read back an id with no
+    /// row behind it. `PlaylistService` would carry that dead id into
+    /// `commitImport`, where the membership insert could not resolve it — see
+    /// `addMembership`.
+    ///
+    /// The caller asks the database rather than trusting the snapshot, because
+    /// "the projection omits the master" and "the row will not exist" are not the
+    /// same claim: `prune` refuses to delete anything when handed an empty
+    /// projection, so a row can outlive a snapshot that never mentioned it.
+    private func clearMasterPlaylistID() throws {
+        try exec("DELETE FROM meta WHERE key = 'master_playlist_id';")
     }
 
     /// Upserts a track row.
@@ -899,16 +950,10 @@ final class LibraryStore: @unchecked Sendable {
 
                 if let playlistID {
                     let next = try nextPosition(in: playlistID)
-                    try exec(
-                        """
-                        INSERT OR IGNORE INTO playlist_member (playlist_id, track_id, position)
-                        VALUES (?, ?, ?);
-                        """,
-                        bindings: [
-                            .text(playlistID.uuidString),
-                            .text(record.id.uuidString),
-                            .int(position.map(Int64.init) ?? next),
-                        ]
+                    try addMembership(
+                        playlistID: playlistID,
+                        trackID: record.id,
+                        position: position.map(Int64.init) ?? next
                     )
                 }
 
@@ -970,6 +1015,11 @@ final class LibraryStore: @unchecked Sendable {
     /// The self-heal for the "present on disk, invisible in the UI" failure: a
     /// track with no membership row is unreachable from `sortedAudioFiles`,
     /// which is driven entirely by the master playlist.
+    ///
+    /// - Returns: `true` when a row was inserted. `false` when the track already
+    ///   had one, or when `playlistID` does not resolve — the caller's two cases
+    ///   are not interchangeable, so this reports the insert's own result rather
+    ///   than assuming it happened.
     @discardableResult
     func ensureMembership(trackID: UUID, in playlistID: UUID) throws -> Bool {
         try withLock {
@@ -981,18 +1031,11 @@ final class LibraryStore: @unchecked Sendable {
                 guard existing == 0 else { return false }
 
                 let next = try nextPosition(in: playlistID)
-                try exec(
-                    """
-                    INSERT OR IGNORE INTO playlist_member (playlist_id, track_id, position)
-                    VALUES (?, ?, ?);
-                    """,
-                    bindings: [
-                        .text(playlistID.uuidString),
-                        .text(trackID.uuidString),
-                        .int(next),
-                    ]
+                return try addMembership(
+                    playlistID: playlistID,
+                    trackID: trackID,
+                    position: next
                 )
-                return true
             }
         }
     }
@@ -1154,8 +1197,55 @@ final class LibraryStore: @unchecked Sendable {
         )
     }
 
+    /// Writes one `playlist_member` row, if that playlist exists.
+    ///
+    /// Membership is bookkeeping about a track that has already been committed;
+    /// it is not what makes the import legal. So a playlist id that does not
+    /// resolve must skip the row rather than abort the caller — the same rule
+    /// C16 established for a file that cannot be decoded.
+    ///
+    /// The obvious spelling, `INSERT OR IGNORE`, does **not** work here. SQLite's
+    /// `ON CONFLICT` clause resolves UNIQUE, NOT NULL and CHECK violations only:
+    /// "The ON CONFLICT clause does not apply to FOREIGN KEY constraints." A
+    /// dangling `playlist_id` therefore surfaced as `SQLITE_CONSTRAINT_FOREIGNKEY`
+    /// from `sqlite3_step`, which rolled back the *track* row inserted earlier in
+    /// the same transaction — a file staged, decoded and validated successfully and
+    /// then discarded, reported as a database fault. That is the failure this
+    /// helper exists to make unrepresentable.
+    ///
+    /// `SELECT … WHERE EXISTS` keeps the check and the insert in one statement, so
+    /// there is no window between them, and `changes()` reports whether the row
+    /// was actually written rather than the caller inferring it.
+    ///
+    /// - Returns: `true` when a row was inserted.
+    @discardableResult
+    private func addMembership(
+        playlistID: UUID,
+        trackID: UUID,
+        position: Int64
+    ) throws -> Bool {
+        try exec(
+            """
+            INSERT OR IGNORE INTO playlist_member (playlist_id, track_id, position)
+            SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM playlist WHERE id = ?);
+            """,
+            bindings: [
+                .text(playlistID.uuidString),
+                .text(trackID.uuidString),
+                .int(position),
+                .text(playlistID.uuidString),
+            ]
+        )
+        return changes > 0
+    }
+
     private func errorMessage(_ handle: OpaquePointer) -> String {
         String(cString: sqlite3_errmsg(handle))
+    }
+
+    /// Rows changed by the most recent statement on this connection.
+    private var changes: Int {
+        Int(sqlite3_changes(handle))
     }
 
     // MARK: Binding / decoding
