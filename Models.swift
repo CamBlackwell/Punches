@@ -7,17 +7,38 @@ struct AudioFile: Identifiable, Codable {
     let audioDuration: Float
     var artworkImageName: String?
     var title: String
-    
+
+    // MARK: Metadata
+    //
+    // Read from the file's own tags by `AudioMetadataReader` and carried through
+    // to the UI. Every one is optional because a file need not be tagged, and
+    // `nil` has to stay distinguishable from "" — an empty artist line is a
+    // different thing from a file that was never asked.
+
+    var artist: String?
+    var album: String?
+    var albumArtist: String?
+    var genre: String?
+    var year: Int?
+    var trackNumber: Int?
+    var trackTotal: Int?
+    var discNumber: Int?
+    var discTotal: Int?
+    var comment: String?
+
     var fileURL: URL {
         AudioManager.fileDirectory.appendingPathComponent(fileName)
     }
-    
+
     /// The extension-free name. Both initialisers and the decoder use this, so a
     /// track's displayed title no longer depends on which code path created it.
+    ///
+    /// Only ever the *fallback*. A tagged file's title comes from its tags, and
+    /// the filename is a worse answer than the user already wrote.
     private static func title(from fileName: String) -> String {
         (fileName as NSString).deletingPathExtension
     }
-    
+
     init(fileName: String, audioDuration: Float, artworkImageName: String? = nil) {
         self.id = UUID()
         self.fileName = fileName
@@ -26,18 +47,47 @@ struct AudioFile: Identifiable, Codable {
         self.artworkImageName = artworkImageName
         self.title = Self.title(from: fileName)
     }
-    
-    init(id: UUID, fileName: String, dateAdded: Date, audioDuration: Float, artworkImageName: String? = nil, title: String? = nil) {
+
+    init(
+        id: UUID,
+        fileName: String,
+        dateAdded: Date,
+        audioDuration: Float,
+        artworkImageName: String? = nil,
+        title: String? = nil,
+        artist: String? = nil,
+        album: String? = nil,
+        albumArtist: String? = nil,
+        genre: String? = nil,
+        year: Int? = nil,
+        trackNumber: Int? = nil,
+        trackTotal: Int? = nil,
+        discNumber: Int? = nil,
+        discTotal: Int? = nil,
+        comment: String? = nil
+    ) {
         self.id = id
         self.fileName = fileName
         self.dateAdded = dateAdded
         self.audioDuration = audioDuration
         self.artworkImageName = artworkImageName
         self.title = title ?? Self.title(from: fileName)
+        self.artist = artist
+        self.album = album
+        self.albumArtist = albumArtist
+        self.genre = genre
+        self.year = year
+        self.trackNumber = trackNumber
+        self.trackTotal = trackTotal
+        self.discNumber = discNumber
+        self.discTotal = discTotal
+        self.comment = comment
     }
 
     enum CodingKeys: String, CodingKey {
         case id, fileName, dateAdded, audioDuration, artworkImageName, title
+        case artist, album, albumArtist, genre, year
+        case trackNumber, trackTotal, discNumber, discTotal, comment
     }
 
     /// Decoded field by field, with a default for every key that may be absent.
@@ -57,6 +107,37 @@ struct AudioFile: Identifiable, Codable {
         artworkImageName = try container.decodeIfPresent(String.self, forKey: .artworkImageName)
         title = try container.decodeIfPresent(String.self, forKey: .title)
             ?? Self.title(from: fileName)
+        artist = try container.decodeIfPresent(String.self, forKey: .artist)
+        album = try container.decodeIfPresent(String.self, forKey: .album)
+        albumArtist = try container.decodeIfPresent(String.self, forKey: .albumArtist)
+        genre = try container.decodeIfPresent(String.self, forKey: .genre)
+        year = try container.decodeIfPresent(Int.self, forKey: .year)
+        trackNumber = try container.decodeIfPresent(Int.self, forKey: .trackNumber)
+        trackTotal = try container.decodeIfPresent(Int.self, forKey: .trackTotal)
+        discNumber = try container.decodeIfPresent(Int.self, forKey: .discNumber)
+        discTotal = try container.decodeIfPresent(Int.self, forKey: .discTotal)
+        comment = try container.decodeIfPresent(String.self, forKey: .comment)
+    }
+
+    /// The single line to show under the title.
+    ///
+    /// Album artist is the fallback because single-artist files are tagged
+    /// inconsistently between the two fields; see `AudioMetadata.bestArtist`.
+    var subtitle: String? {
+        let parts = [
+            bestArtistLabel,
+            album,
+            year.map(String.init),
+        ].compactMap { $0 }.filter { !$0.isEmpty }
+
+        guard !parts.isEmpty else { return nil }
+        return parts.joined(separator: " · ")
+    }
+
+    private var bestArtistLabel: String? {
+        if let artist, !artist.isEmpty { return artist }
+        if let albumArtist, !albumArtist.isEmpty { return albumArtist }
+        return nil
     }
 }
 

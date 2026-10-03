@@ -258,6 +258,20 @@ final class LibraryImportPipeline {
             let probe = try validate(staged)
             try store.updateImportJob(jobID!, state: .validated)
 
+            // 6b. Read the tags. Done here, while the staged file is still
+            //     addressable and known-good, rather than lazily on first play:
+            //     the bookmark can expire and the provider can evict the original,
+            //     so a later read is a read that can fail. Never fatal — see
+            //     `AudioMetadataReader`.
+            let metadata = await AudioMetadataReader.read(
+                from: staged,
+                probe: ProbeValues(
+                    sampleRate: probe.sampleRate,
+                    channelCount: Int(probe.channelCount)
+                )
+            )
+            let artworkName = saveEmbeddedArtwork(metadata.artworkData)
+
             // 7. Promote to the library directory, *then* commit the row.
             //    Bytes before row: a failure between the two leaves untracked
             //    bytes, which the reconciler moves to Trash. Row before bytes
@@ -269,18 +283,33 @@ final class LibraryImportPipeline {
                 id: UUID(),
                 fileName: trackURL.lastPathComponent,
                 sourceName: sourceName,
-                displayTitle: (sourceName as NSString).deletingPathExtension,
+                displayTitle: Self.displayTitle(tagged: metadata.title, sourceName: sourceName),
                 // The stored file's own extension, which `stage` may have identified from the
                 // content when the source had none.
                 ext: trackURL.pathExtension,
                 byteSize: Self.byteSize(of: trackURL),
                 duration: probe.duration,
                 dateAdded: Date(),
-                artworkName: nil,
+                artworkName: artworkName,
                 originBookmark: refreshed ?? bookmark,
                 state: .committed,
                 rejectReason: nil,
-                importedVia: .documentPicker
+                importedVia: .documentPicker,
+                artist: metadata.artist,
+                album: metadata.album,
+                albumArtist: metadata.albumArtist,
+                genre: metadata.genre,
+                year: metadata.year,
+                trackNumber: metadata.trackNumber,
+                trackTotal: metadata.trackTotal,
+                discNumber: metadata.discNumber,
+                discTotal: metadata.discTotal,
+                comment: metadata.comment,
+                sampleRate: metadata.sampleRate,
+                channelCount: metadata.channelCount,
+                // The read above is what filled these columns, so the row is
+                // complete and the backfill sweep must not open the file again.
+                tagsRead: true
             )
 
             let masterID = manager.masterPlaylistID
@@ -383,22 +412,47 @@ final class LibraryImportPipeline {
             try FileManager.default.moveItem(at: inbound.url, to: staged)
 
             let probe = try validate(staged)
+            let metadata = await AudioMetadataReader.read(
+                from: staged,
+                probe: ProbeValues(
+                    sampleRate: probe.sampleRate,
+                    channelCount: Int(probe.channelCount)
+                )
+            )
             let trackURL = try promote(staged: staged, jobID: inbound.id)
 
             let record = TrackRecord(
                 id: UUID(),
                 fileName: trackURL.lastPathComponent,
                 sourceName: inbound.originalName,
-                displayTitle: ((inbound.originalName as NSString).deletingPathExtension),
+                displayTitle: Self.displayTitle(
+                    tagged: metadata.title,
+                    sourceName: inbound.originalName
+                ),
                 ext: ext,
                 byteSize: Self.byteSize(of: trackURL),
                 duration: probe.duration,
                 dateAdded: Date(),
-                artworkName: nil,
+                artworkName: saveEmbeddedArtwork(metadata.artworkData),
                 originBookmark: nil,
                 state: .committed,
                 rejectReason: nil,
-                importedVia: .shareExtension
+                importedVia: .shareExtension,
+                artist: metadata.artist,
+                album: metadata.album,
+                albumArtist: metadata.albumArtist,
+                genre: metadata.genre,
+                year: metadata.year,
+                trackNumber: metadata.trackNumber,
+                trackTotal: metadata.trackTotal,
+                discNumber: metadata.discNumber,
+                discTotal: metadata.discTotal,
+                comment: metadata.comment,
+                sampleRate: metadata.sampleRate,
+                channelCount: metadata.channelCount,
+                // The read above is what filled these columns, so the row is
+                // complete and the backfill sweep must not open the file again.
+                tagsRead: true
             )
 
             let masterID = manager.masterPlaylistID
@@ -519,6 +573,28 @@ final class LibraryImportPipeline {
         }
 
         return final
+    }
+
+    /// What the track should be called in the library.
+    ///
+    /// The tag wins over the filename. A tagged file carries the title its owner
+    /// chose — "01 - Home Recording", not `B8F2A1C4-…` — and a filename is a
+    /// worse answer whenever it exists. The filename remains the fallback for
+    /// untagged files, which is most of what this app sees from a share sheet.
+    private static func displayTitle(tagged: String?, sourceName: String) -> String {
+        if let tagged, !tagged.isEmpty { return tagged }
+        return (sourceName as NSString).deletingPathExtension
+    }
+
+    /// Saves embedded cover art and returns the name to store, or `nil`.
+    ///
+    /// Delegates to `ArtworkService` rather than writing the bytes here, so
+    /// embedded art lands in the same form as art a user picked by hand — one
+    /// representation, one cache, one place that can be wrong. The decode
+    /// failure is deliberately not distinguished from "no art": both mean the row
+    /// has no cover, and neither is a reason to refuse an import.
+    private func saveEmbeddedArtwork(_ data: Data?) -> String? {
+        manager.artworkService.saveArtwork(from: data)
     }
 
     /// The extension the staged copy must carry for AVFoundation to open it.

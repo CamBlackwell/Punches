@@ -13,9 +13,39 @@ final class ArtworkService {
         self.manager = manager
     }
 
+    /// The name a newly saved cover is stored under.
+    ///
+    /// Static so there is exactly one definition. `LibraryTagSweep` saves art
+    /// without an `AudioManager` to reach — it runs independently of the UI — and
+    /// a second copy of this string is how "embedded covers and hand-picked
+    /// covers are stored differently" would happen.
+    static func artworkFileName() -> String {
+        "artwork_\(UUID().uuidString).jpg"
+    }
+
+    /// Saves cover art that arrived as encoded bytes.
+    ///
+    /// The case is embedded art — an `APIC` frame lifted straight out of a file —
+    /// which arrives already compressed and already in whatever format the tagger
+    /// chose. Decoding and re-encoding through `saveArtwork(from:)` is the point:
+    /// embedded art ends up identical in kind to art a user picked by hand, so
+    /// there is one representation to cache, display and eventually resize.
+    ///
+    /// Returns `nil` for bytes that are not an image, or that fail to write. A
+    /// missing cover is a cosmetic gap and must never fail an import.
+    @discardableResult
+    func saveArtwork(from data: Data?) -> String? {
+        guard let data, !data.isEmpty else { return nil }
+        guard let image = UIImage(data: data) else {
+            print("Embedded artwork is not decodable")
+            return nil
+        }
+        return saveArtwork(from: image)
+    }
+
     func saveArtwork(from image: UIImage) -> String? {
         guard let imageData = image.jpegData(compressionQuality: 0.8) else { return nil }
-        let filename = "artwork_\(UUID().uuidString).jpg"
+        let filename = Self.artworkFileName()
         let fileURL = manager.artworkDirectory.appendingPathComponent(filename)
 
         do {
@@ -51,16 +81,12 @@ final class ArtworkService {
         let oldArtwork = manager.audioFiles[index].artworkImageName
         guard let newFilename = saveArtwork(from: image) else { return }
 
-        let updatedFile = AudioFile(
-            id: audioFile.id,
-            fileName: audioFile.fileName,
-            dateAdded: audioFile.dateAdded,
-            audioDuration: audioFile.audioDuration,
-            artworkImageName: newFilename,
-            title: audioFile.title
-        )
+        // Mutated in place rather than by rebuilding an `AudioFile`. Rebuilding
+        // means restating every field, and any field added later is silently
+        // dropped — which is exactly how the tag columns would have been lost
+        // every time a user picked a cover.
+        manager.audioFiles[index].artworkImageName = newFilename
 
-        manager.audioFiles[index] = updatedFile
         manager.displayedSongs = manager.sortedAudioFiles
         manager.libraryService.saveAudioFiles()
         deleteArtworkIfUnused(oldArtwork)
@@ -85,16 +111,9 @@ final class ArtworkService {
 
         let oldArtwork = manager.audioFiles[index].artworkImageName
 
-        let updatedFile = AudioFile(
-            id: audioFile.id,
-            fileName: audioFile.fileName,
-            dateAdded: audioFile.dateAdded,
-            audioDuration: audioFile.audioDuration,
-            artworkImageName: nil,
-            title: audioFile.title
-        )
+        // In place, for the reason given in `setArtwork(_:for:)`.
+        manager.audioFiles[index].artworkImageName = nil
 
-        manager.audioFiles[index] = updatedFile
         manager.libraryService.saveAudioFiles()
         deleteArtworkIfUnused(oldArtwork)
     }

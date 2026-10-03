@@ -1575,14 +1575,30 @@ struct AudioFileRow: View {
                 .frame(width: 45, height: 45)
             }
             HStack(alignment: .center, spacing: 4) {
-                Text(audioFile.title)
-                    .font(.custom("HelveticaNeue-Bold", size: 18, relativeTo: .body))
-                    .foregroundStyle(
-                        isCurrentlyPlaying ? theme.accentColor : theme.textColor
-                    )
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+                // Title and subtitle share one `VStack` so a track with no tags
+                // takes exactly the same height as one with tags — otherwise the
+                // list reflows as rows gain metadata, which reads as the library
+                // jumping.
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(audioFile.title)
+                        .font(.custom("HelveticaNeue-Bold", size: 18, relativeTo: .body))
+                        .foregroundStyle(
+                            isCurrentlyPlaying ? theme.accentColor : theme.textColor
+                        )
+                        .lineLimit(1)
+
+                    // Artist · album · year, whatever the file actually carried.
+                    // Nil for an untagged file, which shows the title alone.
+                    if let subtitle = audioFile.subtitle {
+                        Text(subtitle)
+                            .font(.custom("HelveticaNeue-Light", size: 12, relativeTo: .body))
+                            .foregroundStyle(theme.secondaryTextColor)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+
                 Text(formatTime(audioFile.audioDuration))
                     .font(.custom("HelveticaNeue-Light", size: 13, relativeTo: .body)).foregroundStyle(theme.secondaryTextColor)
                 .lineLimit(1)

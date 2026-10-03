@@ -20,7 +20,7 @@ import Foundation
 enum LibrarySchema {
 
     /// Bumped whenever `migrate(from:to:)` gains a step.
-    static let currentVersion: Int32 = 1
+    static let currentVersion: Int32 = 2
 
     /// Statements that build version 1. Idempotent, so they double as the
     /// "create if absent" path.
@@ -86,6 +86,55 @@ enum LibrarySchema {
             value TEXT
         )
         """,
+    ]
+
+    /// Steps version 1 to 2: the tag columns on `track`.
+    ///
+    /// Carries each column name alongside its statement because
+    /// `ALTER TABLE ... ADD COLUMN` is **not** idempotent — it fails if the
+    /// column is already present. `migrate()` uses the name to skip columns that
+    /// `table_info` already reports, so the step is safe to re-run against a
+    /// database that was stamped `user_version = 1` by an earlier build, which is
+    /// precisely what every upgrading user has.
+    ///
+    /// Every column is nullable with no default. That is not laziness: a
+    /// non-null column would have to be backfilled with a placeholder, and a
+    /// placeholder that says "no artist" is indistinguishable from a real artist
+    /// once it has been written. `NULL` means "not known", which is the truth
+    /// for every row that predates this version.
+    static let version2: [(column: String, sql: String)] = [
+        ("artist", "ALTER TABLE track ADD COLUMN artist TEXT"),
+        ("album", "ALTER TABLE track ADD COLUMN album TEXT"),
+        ("album_artist", "ALTER TABLE track ADD COLUMN album_artist TEXT"),
+        ("genre", "ALTER TABLE track ADD COLUMN genre TEXT"),
+        ("release_year", "ALTER TABLE track ADD COLUMN release_year INTEGER"),
+        ("track_number", "ALTER TABLE track ADD COLUMN track_number INTEGER"),
+        ("track_total", "ALTER TABLE track ADD COLUMN track_total INTEGER"),
+        ("disc_number", "ALTER TABLE track ADD COLUMN disc_number INTEGER"),
+        ("disc_total", "ALTER TABLE track ADD COLUMN disc_total INTEGER"),
+        ("comment", "ALTER TABLE track ADD COLUMN comment TEXT"),
+        ("sample_rate", "ALTER TABLE track ADD COLUMN sample_rate REAL"),
+        ("channel_count", "ALTER TABLE track ADD COLUMN channel_count INTEGER"),
+        // `NOT NULL DEFAULT 0` is safe here because the default *is* the truth:
+        // a row that existed before tags were read genuinely has not had them
+        // read. Every other column is nullable so that "not tagged" and "no
+        // value" stay distinguishable.
+        ("tags_read", "ALTER TABLE track ADD COLUMN tags_read INTEGER NOT NULL DEFAULT 0"),
+    ]
+
+    /// The `track` columns, in the order `LibraryStore.decodeTrack` expects them.
+    ///
+    /// One list, used by every `SELECT`, so a column added here cannot be added
+    /// to the projection but forgotten in the decoder — the failure mode that
+    /// [C15](14-known-issues.md#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran)
+    /// showed is invisible to the compiler.
+    static let trackColumns = [
+        "id", "file_name", "source_name", "display_title", "ext", "byte_size",
+        "duration", "date_added", "artwork_name", "origin_bookmark",
+        "state", "reject_reason", "imported_via",
+        "artist", "album", "album_artist", "genre", "release_year",
+        "track_number", "track_total", "disc_number", "disc_total",
+        "comment", "sample_rate", "channel_count", "tags_read",
     ]
 }
 

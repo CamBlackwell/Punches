@@ -26,6 +26,35 @@ struct TrackRecord {
     var rejectReason: String?
     var importedVia: ImportOrigin?
 
+    // MARK: Metadata
+    //
+    // All defaulted to `nil`, so the call sites that legitimately have no tag
+    // information — `LibraryMigration` adopting files off disk, the reconciler
+    // rebuilding a row — keep compiling unchanged. That matters more than it
+    // looks: those two paths must not be the ones forced to invent a value.
+
+    var artist: String?
+    var album: String?
+    var albumArtist: String?
+    var genre: String?
+    var year: Int?
+    var trackNumber: Int?
+    var trackTotal: Int?
+    var discNumber: Int?
+    var discTotal: Int?
+    var comment: String?
+    var sampleRate: Double?
+    var channelCount: Int?
+
+    /// Whether this file's tags have been read yet.
+    ///
+    /// Exists so the backfill sweep can ask "what still needs reading?" without
+    /// re-opening every file in the library on every launch, and so an
+    /// interrupted sweep resumes where it stopped. A `NULL`-tagged row is not
+    /// the same thing as an unread one: a file with no tags at all must not be
+    /// re-opened forever.
+    var tagsRead: Bool = false
+
     /// The view-facing projection. Every `AudioFile` the UI sees comes from here.
     var audioFile: AudioFile {
         AudioFile(
@@ -34,7 +63,17 @@ struct TrackRecord {
             dateAdded: dateAdded,
             audioDuration: duration,
             artworkImageName: artworkName,
-            title: displayTitle
+            title: displayTitle,
+            artist: artist,
+            album: album,
+            albumArtist: albumArtist,
+            genre: genre,
+            year: year,
+            trackNumber: trackNumber,
+            trackTotal: trackTotal,
+            discNumber: discNumber,
+            discTotal: discTotal,
+            comment: comment
         )
     }
 }
@@ -204,9 +243,18 @@ final class LibraryStore: @unchecked Sendable {
 
     /// Steps the schema forward. Each step is a transaction, so an interrupted
     /// upgrade leaves the previous version intact rather than a half-built one.
+    ///
+    /// Written as an explicit ladder rather than a version switch, because the
+    /// original shape here — `if current == 0 { ...stamp currentVersion }` — is
+    /// wrong the moment a second version exists: a fresh install would create
+    /// v1 and immediately *stamp itself as current*, skipping the v1 → v2 step
+    /// entirely. That is the kind of bug that only appears on real upgrades,
+    /// because a fresh install never takes the `else` branch. See
+    /// [C16](14-known-issues.md#c16-a-file-with-no-extension-could-never-be-imported-and-every-failure-was-reported-as-unsupported-format)
+    /// for the same pattern of a defect that a build cannot catch.
     private func migrate() throws {
         try withLock {
-            let current = try scalarInt("PRAGMA user_version;")
+            var current = Int32(try scalarInt("PRAGMA user_version;"))
             guard current < LibrarySchema.currentVersion else { return }
 
             if current == 0 {
@@ -214,16 +262,144 @@ final class LibraryStore: @unchecked Sendable {
                     for statement in LibrarySchema.version1 {
                         try exec(statement)
                     }
-                    try exec("PRAGMA user_version = \(LibrarySchema.currentVersion);")
+                    // The version this step *reached*, not `currentVersion`. A
+                    // ladder that stamps the newest version skips every step
+                    // between the one it ran and the newest, and the next
+                    // person to add v3 would get a database stamped v3 that never
+                    // ran the v2 → v3 ALTERs.
+                    current += 1
+                    try exec("PRAGMA user_version = \(current);")
                 }
-            } else {
-                // Future: `if current == 1 { ... bump to 2 ... }`
+            }
+
+            if current == 1 {
+                try withTransaction {
+                    let existing = try columnNames(of: "track")
+                    for step in LibrarySchema.version2 where !existing.contains(step.column) {
+                        try exec(step.sql)
+                    }
+                    current += 1
+                    try exec("PRAGMA user_version = \(current);")
+                }
+            }
+
+            if current < LibrarySchema.currentVersion {
                 Self.logger.notice("No migration path from schema v\(current)")
             }
         }
     }
 
+    /// The column names of `table`, or `[]` if it does not exist.
+    ///
+    /// Used to make `ALTER TABLE ... ADD COLUMN` re-runnable; see
+    /// `LibrarySchema.version2`.
+    private func columnNames(of table: String) throws -> Set<String> {
+        var names: Set<String> = []
+        try forEachRow("PRAGMA table_info(\(table));") { stmt in
+            // `table_info` is (cid, name, type, notnull, dflt_value, pk).
+            if let name = Self.text(stmt, 1) { names.insert(name) }
+        }
+        return names
+    }
+
     // MARK: Reading
+
+    /// Committed tracks whose tags have never been read, oldest first.
+    ///
+    /// Ordered oldest-first on purpose: the pre-metadata library is the files a
+    /// user has had longest, and if the sweep is interrupted those are the ones
+    /// that would otherwise never be reached.
+    func loadTracksNeedingTags() throws -> [TrackRecord] {
+        try withLock {
+            var records: [TrackRecord] = []
+            try forEachRow(
+                """
+                SELECT \(LibrarySchema.trackColumns.joined(separator: ", "))
+                FROM track
+                WHERE state = \(TrackState.committed.rawValue) AND tags_read = 0
+                ORDER BY date_added ASC
+                """
+            ) { stmt in
+                if let record = Self.decodeTrack(stmt) {
+                    records.append(record)
+                }
+            }
+            return records
+        }
+    }
+
+    /// Writes the tag columns of an existing row, and stamps it as read.
+    ///
+    /// Deliberately narrower than `commitImport`. There is no import job here, no
+    /// membership to write and no transaction spanning other rows, so this is a
+    /// single statement. What it must *not* do is touch anything the tags do not
+    /// describe: `file_name`, `state`, `origin_bookmark` and `imported_via` are
+    /// absent from the statement, so a sweep can never move, un-commit or
+    /// re-bookmark a file.
+    ///
+    /// `display_title` and `artwork_name` are included because a first tag read
+    /// routinely improves both — the filename-derived title is a placeholder, and
+    /// embedded cover art has nowhere else to come from.
+    func applyTags(
+        to trackID: UUID,
+        from metadata: AudioMetadata,
+        displayTitle: String,
+        artworkName: String?
+    ) throws {
+        try withLock {
+            try exec(
+                """
+                UPDATE track SET
+                    display_title = ?,
+                    artwork_name  = COALESCE(?, artwork_name),
+                    artist        = ?, album = ?, album_artist = ?, genre = ?,
+                    release_year  = ?, track_number = ?, track_total = ?,
+                    disc_number   = ?, disc_total = ?, comment = ?,
+                    sample_rate   = ?, channel_count = ?,
+                    tags_read     = 1
+                WHERE id = ?;
+                """,
+                bindings: [
+                    .text(displayTitle),
+                    artworkName.map { Binding.text($0) } ?? .null,
+                    metadata.artist.map { Binding.text($0) } ?? .null,
+                    metadata.album.map { Binding.text($0) } ?? .null,
+                    metadata.albumArtist.map { Binding.text($0) } ?? .null,
+                    metadata.genre.map { Binding.text($0) } ?? .null,
+                    metadata.year.map { Binding.int(Int64($0)) } ?? .null,
+                    metadata.trackNumber.map { Binding.int(Int64($0)) } ?? .null,
+                    metadata.trackTotal.map { Binding.int(Int64($0)) } ?? .null,
+                    metadata.discNumber.map { Binding.int(Int64($0)) } ?? .null,
+                    metadata.discTotal.map { Binding.int(Int64($0)) } ?? .null,
+                    metadata.comment.map { Binding.text($0) } ?? .null,
+                    metadata.sampleRate.map { Binding.double($0) } ?? .null,
+                    metadata.channelCount.map { Binding.int(Int64($0)) } ?? .null,
+                    .text(trackID.uuidString),
+                ]
+            )
+        }
+    }
+
+    /// One committed track, or `nil` if there is no such row.
+    ///
+    /// Backs the manual "refresh tags" path, which has a row id from the UI and
+    /// no interest in loading the library to find it.
+    func loadTrack(id: UUID) throws -> TrackRecord? {
+        try withLock {
+            var found: TrackRecord?
+            try forEachRow(
+                """
+                SELECT \(LibrarySchema.trackColumns.joined(separator: ", "))
+                FROM track
+                WHERE id = ? AND state = \(TrackState.committed.rawValue)
+                """,
+                bindings: [.text(id.uuidString)]
+            ) { stmt in
+                found = Self.decodeTrack(stmt)
+            }
+            return found
+        }
+    }
 
     /// Committed tracks, newest first — the order the Songs tab uses.
     func loadTracks() throws -> [TrackRecord] {
@@ -231,9 +407,7 @@ final class LibraryStore: @unchecked Sendable {
             var records: [TrackRecord] = []
             try forEachRow(
                 """
-                SELECT id, file_name, source_name, display_title, ext, byte_size,
-                       duration, date_added, artwork_name, origin_bookmark,
-                       state, reject_reason, imported_via
+                SELECT \(LibrarySchema.trackColumns.joined(separator: ", "))
                 FROM track
                 WHERE state = \(TrackState.committed.rawValue)
                 ORDER BY date_added DESC
@@ -253,9 +427,7 @@ final class LibraryStore: @unchecked Sendable {
             var records: [TrackRecord] = []
             try forEachRow(
                 """
-                SELECT id, file_name, source_name, display_title, ext, byte_size,
-                       duration, date_added, artwork_name, origin_bookmark,
-                       state, reject_reason, imported_via
+                SELECT \(LibrarySchema.trackColumns.joined(separator: ", "))
                 FROM track
                 ORDER BY date_added DESC
                 """
@@ -366,19 +538,39 @@ final class LibraryStore: @unchecked Sendable {
     /// `source_name`, `origin_bookmark`, `reject_reason` and `imported_via` are
     /// left alone on conflict, because the view-facing model has no opinion
     /// about them and must not be able to erase them.
+    ///
+    /// The tag columns use `COALESCE(excluded.x, track.x)` rather than plain
+    /// assignment. `AudioFile` is a *projection* of the row, so a caller that
+    /// rebuilds one from a subset of its fields — `ArtworkService.setArtwork`
+    /// does exactly this when the user picks a cover — would otherwise blank the
+    /// artist and album of every track whose artwork they change. A nil tag means
+    /// "this snapshot did not carry it", not "clear it".
     private func upsertTrack(_ track: AudioFile) throws {
         let ext = (track.fileName as NSString).pathExtension
         try exec(
             """
-            INSERT INTO track (id, file_name, display_title, ext, duration, date_added, artwork_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO track (id, file_name, display_title, ext, duration, date_added,
+                               artwork_name, artist, album, album_artist, genre,
+                               release_year, track_number, track_total,
+                               disc_number, disc_total, comment)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 file_name     = excluded.file_name,
                 display_title = excluded.display_title,
                 ext           = excluded.ext,
                 duration      = excluded.duration,
                 date_added    = excluded.date_added,
-                artwork_name  = excluded.artwork_name;
+                artwork_name  = excluded.artwork_name,
+                artist        = COALESCE(excluded.artist, track.artist),
+                album         = COALESCE(excluded.album, track.album),
+                album_artist  = COALESCE(excluded.album_artist, track.album_artist),
+                genre         = COALESCE(excluded.genre, track.genre),
+                release_year  = COALESCE(excluded.release_year, track.release_year),
+                track_number  = COALESCE(excluded.track_number, track.track_number),
+                track_total   = COALESCE(excluded.track_total, track.track_total),
+                disc_number   = COALESCE(excluded.disc_number, track.disc_number),
+                disc_total    = COALESCE(excluded.disc_total, track.disc_total),
+                comment       = COALESCE(excluded.comment, track.comment);
             """,
             bindings: [
                 .text(track.id.uuidString),
@@ -388,6 +580,16 @@ final class LibraryStore: @unchecked Sendable {
                 .double(Double(track.audioDuration)),
                 .double(track.dateAdded.timeIntervalSince1970),
                 track.artworkImageName.map { .text($0) } ?? .null,
+                track.artist.map { .text($0) } ?? .null,
+                track.album.map { .text($0) } ?? .null,
+                track.albumArtist.map { .text($0) } ?? .null,
+                track.genre.map { .text($0) } ?? .null,
+                track.year.map { .int(Int64($0)) } ?? .null,
+                track.trackNumber.map { .int(Int64($0)) } ?? .null,
+                track.trackTotal.map { .int(Int64($0)) } ?? .null,
+                track.discNumber.map { .int(Int64($0)) } ?? .null,
+                track.discTotal.map { .int(Int64($0)) } ?? .null,
+                track.comment.map { .text($0) } ?? .null,
             ]
         )
     }
@@ -633,8 +835,13 @@ final class LibraryStore: @unchecked Sendable {
                     """
                     INSERT INTO track (id, file_name, source_name, display_title, ext,
                                        byte_size, duration, date_added, artwork_name,
-                                       origin_bookmark, state, imported_via)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                       origin_bookmark, state, imported_via,
+                                       artist, album, album_artist, genre,
+                                       release_year, track_number, track_total,
+                                       disc_number, disc_total, comment,
+                                       sample_rate, channel_count, tags_read)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         file_name     = excluded.file_name,
                         source_name   = COALESCE(excluded.source_name, track.source_name),
@@ -644,7 +851,20 @@ final class LibraryStore: @unchecked Sendable {
                         duration      = excluded.duration,
                         artwork_name  = excluded.artwork_name,
                         origin_bookmark = COALESCE(excluded.origin_bookmark, track.origin_bookmark),
-                        state         = excluded.state;
+                        state         = excluded.state,
+                        artist        = excluded.artist,
+                        album         = excluded.album,
+                        album_artist  = excluded.album_artist,
+                        genre         = excluded.genre,
+                        release_year  = excluded.release_year,
+                        track_number  = excluded.track_number,
+                        track_total   = excluded.track_total,
+                        disc_number   = excluded.disc_number,
+                        disc_total    = excluded.disc_total,
+                        comment       = excluded.comment,
+                        sample_rate   = excluded.sample_rate,
+                        channel_count = excluded.channel_count,
+                        tags_read      = excluded.tags_read;
                     """,
                     bindings: [
                         .text(record.id.uuidString),
@@ -659,6 +879,21 @@ final class LibraryStore: @unchecked Sendable {
                         bookmarkBinding,
                         .int(Int64(record.state.rawValue)),
                         importedViaBinding,
+                        record.artist.map { Binding.text($0) } ?? .null,
+                        record.album.map { Binding.text($0) } ?? .null,
+                        record.albumArtist.map { Binding.text($0) } ?? .null,
+                        record.genre.map { Binding.text($0) } ?? .null,
+                        record.year.map { Binding.int(Int64($0)) } ?? .null,
+                        record.trackNumber.map { Binding.int(Int64($0)) } ?? .null,
+                        record.trackTotal.map { Binding.int(Int64($0)) } ?? .null,
+                        record.discNumber.map { Binding.int(Int64($0)) } ?? .null,
+                        record.discTotal.map { Binding.int(Int64($0)) } ?? .null,
+                        record.comment.map { Binding.text($0) } ?? .null,
+                        record.sampleRate.map { Binding.double($0) } ?? .null,
+                        record.channelCount.map { Binding.int(Int64($0)) } ?? .null,
+                        // The pipeline always reads tags before committing, so a
+                        // committed row never needs the backfill sweep.
+                        .int(record.tagsRead ? 1 : 0),
                     ]
                 )
 
@@ -967,6 +1202,25 @@ final class LibraryStore: @unchecked Sendable {
         sqlite3_column_double(stmt, index)
     }
 
+    /// `sqlite3_column_int` for a **nullable** column.
+    ///
+    /// `sqlite3_column_int` cannot distinguish NULL from 0, and every tag column
+    /// added in schema v2 is nullable with NULL meaning "not tagged". Reading
+    /// them through `int(_:_:)` would therefore give every untagged track a
+    /// track number of 0 and a release year of 0 — values that would then be
+    /// written back over the real tags on the next save. Checking the column type
+    /// is the only way to keep "no tag" distinct from "tagged as zero".
+    private static func optInt(_ stmt: OpaquePointer, _ index: Int32) -> Int? {
+        guard sqlite3_column_type(stmt, index) != SQLITE_NULL else { return nil }
+        return Int(sqlite3_column_int64(stmt, index))
+    }
+
+    /// `sqlite3_column_double` for a **nullable** column. See `optInt(_:_:)`.
+    private static func optDouble(_ stmt: OpaquePointer, _ index: Int32) -> Double? {
+        guard sqlite3_column_type(stmt, index) != SQLITE_NULL else { return nil }
+        return sqlite3_column_double(stmt, index)
+    }
+
     private static func decodeTrack(_ stmt: OpaquePointer) -> TrackRecord? {
         guard let id = text(stmt, 0).flatMap(UUID.init(uuidString:)) else { return nil }
 
@@ -983,7 +1237,20 @@ final class LibraryStore: @unchecked Sendable {
             originBookmark: data(stmt, 9),
             state: TrackState(rawValue: int(stmt, 10)) ?? .committed,
             rejectReason: text(stmt, 11),
-            importedVia: text(stmt, 12).flatMap(ImportOrigin.init(rawValue:))
+            importedVia: text(stmt, 12).flatMap(ImportOrigin.init(rawValue:)),
+            artist: text(stmt, 13),
+            album: text(stmt, 14),
+            albumArtist: text(stmt, 15),
+            genre: text(stmt, 16),
+            year: optInt(stmt, 17),
+            trackNumber: optInt(stmt, 18),
+            trackTotal: optInt(stmt, 19),
+            discNumber: optInt(stmt, 20),
+            discTotal: optInt(stmt, 21),
+            comment: text(stmt, 22),
+            sampleRate: optDouble(stmt, 23),
+            channelCount: optInt(stmt, 24),
+            tagsRead: int(stmt, 25) != 0
         )
     }
 

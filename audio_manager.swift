@@ -169,6 +169,30 @@ class AudioManager: NSObject, ObservableObject {
             self.playbackQueue = self.sortedAudioFiles
             self.isImporting = self.importProgress.isRunning
         }
+
+        // Tags last, after the main-actor block above.
+        //
+        // A track imported before metadata existed has columns full of NULL, and
+        // the user should not have to re-add their library to fix that. This runs
+        // after `reconcile()` so it never races the reconciler over a file that is
+        // missing, and after the UI has its rows so the first paint is not waiting
+        // on file I/O. Its reads are awaited, so it yields rather than blocking,
+        // and it is bounded per launch, so a large library costs a little
+        // background work instead of a stalled start — see `LibraryTagSweep` for
+        // why this is not a migration step.
+        let updated = await LibraryTagSweep(
+            environment: libraryEnvironment,
+            store: store,
+            artworkDirectory: artworkDirectory
+        ).run()
+
+        if updated > 0 {
+            LibraryEnvironment.log.notice("Read tags for \(updated) existing track(s)")
+            await MainActor.run {
+                self.libraryService.loadAudioFiles()
+                self.displayedSongs = self.sortedAudioFiles
+            }
+        }
     }
 
     deinit {
