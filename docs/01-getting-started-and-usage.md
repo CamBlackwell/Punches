@@ -30,7 +30,7 @@ It is a local-files player. There is no network, no account, no sync, no streami
 | **Manual song order** | **discarded by the next import/delete** ([§6.12](#612-manual-song-order-is-discarded)) |
 | **Share-to-app (extension import)** | **nonfunctional** — see [09](09-file-import-and-sharing.md) |
 | **Share out (system share sheet)** | works; the playlist path has a hazard ([09 §6.2](09-file-import-and-sharing.md#62-sharesheet)) |
-| Unit tests | target is empty ([03 §5.4](03-project-structure-and-build.md#54-the-test-targets-are-empty-too)) |
+| Unit tests | target is empty ([03 §5.4](03-project-structure-and-build.md#55-the-test-targets-are-empty-too)) |
 
 ---
 

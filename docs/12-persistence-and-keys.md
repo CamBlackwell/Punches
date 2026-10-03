@@ -160,18 +160,51 @@ static let fileDirectory: URL = {
 
 `artwork_<UUID>.jpg` is a fresh name on every save, so setting artwork twice creates two files and relies on `deleteArtworkIfUnused` to reap the first. **Albums do not add a second artwork store**: an album's cover is a row in the same `playlists` array, and `coverIsManual` records only whether that row's `artworkImageName` is a user choice or a derived value ([08 §7.1](08-playlists-and-library.md#71-coverismanual--the-manualderived-distinction)).
 
+### The SQLite library store — the actual source of truth
+
+Everything above describes the **legacy** `UserDefaults` layout, which the `laptop` merge replaced. It is still live in exactly one respect: `LibraryMigration` reads it once to seed the new store, and then it is stale. `AudioManager.fileDirectory` (`AudioFiles/`) remains the path for anything that has not been moved across.
+
+Current state lives in SQLite, resolved by `LibraryEnvironment.resolve()` (`Services/LibraryEnvironment.swift:136`). The root is the app group container when the entitlement works, and `Documents/Punches/` when it does not — see [14 · A3](14-known-issues.md#a3-app-group-entitlement-is-empty), which is why the app currently degrades to the fallback:
+
+```
+Documents/Punches/                  ←  or <group container>/Library/
+├── library.sqlite                  ←  LibraryEnvironment.database
+├── library.sqlite-wal
+├── library.sqlite-shm
+├── tracks/                          ←  committed audio, one file per library row
+├── staging/                         ←  in-flight imports, never a library row
+├── inbound/                         ←  handed over by the share extension
+├── artwork/
+└── trash/                           ←  LibraryReconciler.moveToTrash
+```
+
+Five tables, created by `LibrarySchema.version1`: `track`, `playlist`, `playlist_member`, `import_job`, `meta`. The schema version is stamped in `PRAGMA user_version`; `migrate()` advances it step by step inside a transaction.
+
+**The write path is one function, and it is the one to check first when a change "doesn't save".**
+
+| Call | Effect |
+|---|---|
+| `LibraryStore.exec(_:bindings:)` | `:847` — runs any statement for its effect. The **only** write path in the layer. |
+| `LibraryStore.drain(_:onRow:)` | `:860` — steps a prepared statement to `SQLITE_DONE`, invoking `onRow` per row. Every read and write goes through it. |
+| `LibraryStore.forEachRow(_:bindings:_:)` | `:898` — `drain` plus a per-row closure. |
+| `LibraryStore.persist(_:)` | `:330` — the one mirror operation. Writes tracks, playlists, membership and `meta`, then `prune`s anything absent. **A full mirror, not a delta.** |
+
+> **Gotcha — `sqlite3_prepare_v2` only compiles.** A statement that is prepared and finalised without ever being stepped executes *nothing*, with no error. `exec` is exactly that shape; it now drains through `drain`, and the two must not be split again. This was a real Critical defect for one commit — [14 · C15](14-known-issues.md#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran) — and it compiled and launched cleanly throughout.
+
+> **Gotcha — `persist` is all-or-nothing per snapshot.** `foreign_keys` is `ON` with `ON DELETE CASCADE`, so one `playlist_member` row referencing a `track` id that is not in the snapshot fails the insert and rolls back **every** write in that snapshot. Membership is filtered against the snapshot's own track ids for this reason. If persistence ever "silently stops", check for an orphan member id before anything else.
+
 ---
 
 ## 6. What survives a relaunch
 
 | State | Persisted? | Where |
 |---|---|---|
-| Imported audio files | ✅ | `AudioFiles/` + `"savedAudioFiles"` |
-| Playlists, names, membership, order | ✅ | `"savedPlaylists"` |
-| Albums (as playlists with `isAlbum`), album artist, manual-vs-derived cover | ✅ | `"savedPlaylists"` — no new key, no separate `albums` array |
-| Hidden master playlist + its order | ✅ | `"savedPlaylists"` + `"masterPlaylistID"` |
-| Per-file/per-playlist artwork | ✅ | `Artwork/*.jpg` + model fields |
-| Renamed titles | ✅ | `AudioFile.title` in `"savedAudioFiles"` |
+| Imported audio files | ✅ | `tracks/` + the `track` table |
+| Playlists, names, membership, order | ✅ | the `playlist` and `playlist_member` tables |
+| Albums (as playlists with `isAlbum`), album artist, manual-vs-derived cover | ✅ | the same `playlist` table — no separate `albums` array |
+| Hidden master playlist + its order | ✅ | `playlist.is_master`, plus `meta` for the id; ordered by `playlist_member.position` |
+| Per-file/per-playlist artwork | ✅ | `artwork/artwork_<UUID>.jpg` + the filename column |
+| Renamed titles | ✅ | `track.display_title` |
 | Visualisation mode | ✅ | `"visualisationMode"` |
 | Pitch algorithm | ✅ | `"selectedAlgorithm"` |
 | All 35 theme choices + 30 theme values | ✅ | `theme.*` |
@@ -192,4 +225,5 @@ The three unpersisted playback flags are almost certainly unintentional — the 
 3. Load it in `AudioManager.init` (`audio_manager.swift:73-107`) or `ThemeManager.init` (`setting_View.swift:1024-1092`) with a sensible default, and make the default derivable from a preset where one exists.
 4. If it is user-facing, add a control to `SettingsView` and a row to [11-settings-ui.md](11-settings-ui.md).
 5. Update the relevant table above. These docs are the inventory; if you add a key and do not add a row, the docs are now wrong.
-6. **If the value is a new field on `Playlist` or `AudioFile`, stop and read [14 · C1](14-known-issues.md#c1-master-playlist-recovery-destroys-every-user-playlist) and [C12](14-known-issues.md#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see) first.** There is no migration path, and a decode failure is not a degraded mode — it is a destructive reset of everything the user made. `Playlist` has a hand-written `init(from:)` for exactly this reason: **use `decodeIfPresent(…) ?? default`, never a required key.**
+6. **If the value is a new field on `Playlist` or `AudioFile`, it is a schema change, not a key.** Tracks and playlists are rows, not `Codable` blobs, so `UserDefaults` guidance does not apply: add the column to `LibrarySchema.version1`, bump `LibrarySchema.currentVersion` (`:23`), and add the matching `else if current == 1 { … bump to 2 … }` branch in `LibraryStore.migrate()` (`:207`) — the placeholder there is explicit that new versions need it. Reading a column that does not exist fails at **prepare** time and takes every write in the snapshot with it, so test against a database created at the *previous* version, not a fresh one. `TrackRecord` and `PlaylistRecord` already carry the projection for this reason.
+7. **`decodeIfPresent(…) ?? default` still matters, but for a narrower reason.** It is no longer true that a decode failure destroys the user's library — that was [14 · C1](14-known-issues.md#c1-master-playlist-recovery-destroys-every-user-playlist), now historical. It still matters for `LibraryMigration`, which decodes the **legacy** `UserDefaults` blobs into the new store, and a required key there throws away every record in that blob. `Playlist` has a hand-written `init(from:)` for exactly this reason.

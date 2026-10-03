@@ -292,7 +292,7 @@ The natural improvement is a dedicated `DispatchSourceTimer` on a serial queue t
 
 ### 11.1 Fix order
 
-Findings 1 and 2 are the same bug and must be fixed together: make `RingBuffer` a non-isolated value type over preallocated storage, and give the analyser a `nonisolated` RT entry point. Do this **first**, because repairing target membership ([03](03-project-structure-and-build.md#54-the-test-targets-are-empty-too)) will turn finding 2 into a compile error and stop the build.
+Findings 1 and 2 are the same bug and must be fixed together: make `RingBuffer` a non-isolated value type over preallocated storage, and give the analyser a `nonisolated` RT entry point. Do this **first**, because repairing target membership ([03](03-project-structure-and-build.md#55-the-test-targets-are-empty-too)) will turn finding 2 into a compile error and stop the build.
 
 Finding 3 is a five-line fix that removes a whole class of intermittent audio bugs. Finding 5 is a one-line deletion. Findings 4 and 8 are small but need care.
 

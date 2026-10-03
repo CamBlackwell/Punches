@@ -5,6 +5,8 @@ A severity-ranked register of every defect, dead path, and documentation error f
 **This is the document to read first after [03](03-project-structure-and-build.md).** The project now builds — see [A1](#a1-target-membership-silently-swallowed-files) for what was wrong and how it was repaired. Several of the highest-severity findings below were never surfaced by the compiler while membership was broken, so this register is longer than the live defect list; entries marked **historical** were addressed by the SQLite library layer merged from `laptop` and are retained for context.
 
 > **What the merge changed.** `laptop` added the SQLite-backed library (`LibraryStore`, `LibrarySchema`, `LibraryMigration`, `LibraryReconciler`, `LibraryImportPipeline`, `LibraryImportReport`, `LibraryEnvironment`) and bound the four synchronized folders to the target. **C1**, **C2**, **C3**/**E6**, **C12** and **G1**/**A4**/**G1.3** are addressed by that work and are now historical. The merge itself required a follow-up commit to make the branch compile at all — see that commit for the 20 defects it carried.
+>
+> **What compiling did not catch.** A second follow-up commit was needed after that, for [C15](#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran): the library layer built cleanly and then did nothing at runtime, because `exec` prepared every statement and never stepped it. Four entries in section C were verified against a database that could not be written — see C15's closing note.
 
 > **About the Exploration notes.** Entries carry an **Exploration notes** block recording the hypotheses that have already been ruled out, the instrumentation that would confirm or refute the rest, and any trap for the next person to look. This exists so that a hypothesis is not re-investigated from scratch, and so that a *failed* approach is as visible as a successful one. If you test one of these, update the block — including when the test shows the entry is **wrong**. One entry has already been corrected that way: [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue) previously claimed a variable had no readers anywhere, which was false. All Critical and High entries carry the block; the Medium and Low set does not yet, and should be filled in as each is picked up.
 
@@ -23,11 +25,11 @@ A severity-ranked register of every defect, dead path, and documentation error f
 
 | Severity | Count |
 |---|---|
-| Critical | 13 |
+| Critical | 14 |
 | High | 32 |
 | Medium | 28 |
 | Low | 18 |
-| **Total** | **91** |
+| **Total** | **92** |
 
 The table counts entries, not distinct defects: [A3](#a3-app-group-entitlement-is-empty) and [B1](#b1-app-group-entitlement-is-empty) are the same root cause documented from the build side and the import side, and several entries share a single fix.
 
@@ -43,6 +45,7 @@ User-reported symptoms and the entries that explain them. A single report can ha
 | *"Songs should default to the top of the list, not the bottom."* | [C13](#c13-the-app-opens-on-the-oldest-import-not-the-top-of-the-list) · [C14](#c14-manual-sort-order-is-silently-discarded) | The sort is correct. C13 is the unsorted `audioFiles.first` fallback used for the default selection; C14 is manual order being discarded on recompute. |
 | *"There is no effective metadata integration."* | [D14](#d14-no-metadata-is-read-anywhere-the-title-is-the-filename) · [C8](#c8-the-two-audiofiletitle-fallbacks-disagree) | D14 is the whole gap: the model has no fields for artist/album/genre and nothing reads tags. C8 is why even the filename-derived title is inconsistent — the two `AudioFile` initialisers disagree about stripping the extension. |
 | *"Songs sometimes don't skip when out of the app."* | [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block) · [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) | E16 is the "sometimes": if `setActive` throws at launch, no remote handler is ever registered. E15's background timer throttling is the other half. |
+| *"When I add a song it is not shown on the songs list view after I add it."* | [C15](#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran) · [C13](#c13-the-app-opens-on-the-oldest-import-not-the-top-of-the-list) | C15 was the whole cause: no write in the library layer had ever executed, so the import aborted before it could refresh `displayedSongs`. Fixed. C13 carries a second, independent path to the same symptom — a `displayedSongs` refresh trapped inside the master-playlist guard — and is still open. |
 
 ---
 
@@ -550,6 +553,50 @@ Drag-to-reorder mutates `displayedSongs` in place and persists the IDs, so the n
 - **Ruled out:** "reorder is not persisted." It is — `savePlaylists()` is called on the reordered IDs. It is persisted and then ignored on read.
 - **To confirm:** reorder two songs, then trigger any mutation (rename one), and observe the order revert. The revert is the tell.
 - **Note:** this interacts with [C4](#c4-reordering-does-not-update-playbackqueue) and [C5](#c5-reorderplaylistsongs-captures-index-across-a-dispatch-hop) — all three are consequences of the same split between "the order in the ID array" and "the order the view shows."
+
+### C15 `exec` prepared every statement and never stepped it, so no write ever ran
+
+**Critical — fixed.**
+
+`LibraryStore.exec` was the sole write path for the entire library layer:
+
+```swift
+// Services/LibraryStore.swift:815, before the fix
+private func exec(_ sql: String, bindings: [Binding] = []) throws {
+    try withLock {
+        try query(sql, bindings: bindings) { _ in }
+    }
+}
+```
+
+`query` prepares the statement, hands it to the closure, and finalises it. The closure discarded it, so `sqlite3_step` was never called — and `sqlite3_prepare_v2` only *compiles* SQL. Nothing is executed until a statement is stepped. Every `CREATE TABLE`, `INSERT`, `UPDATE`, `DELETE`, and every `BEGIN` / `COMMIT` / `ROLLBACK` in the library layer was silently discarded. So were the four pragmas in `configure()` (`:196`).
+
+**Measured, before the fix:** `prepare CREATE TABLE ok: true` → `prepare INSERT ok: false` → `tables actually created: NONE`. Adding a single `sqlite3_step` to the same probe reported `step rc: 101` (`SQLITE_DONE`) with the row present.
+
+**The failure was self-poisoning and silent.** The first `CREATE TABLE` did nothing without reporting anything; every later statement naming those tables then failed at *prepare* time with "no such table". `migrate()` therefore created no tables and never stamped `user_version`, and `loadTracks` / `loadPlaylists` / `loadMasterPlaylistID` all threw — swallowed by `try?` at the call sites, so the app opened with an empty library and no message. Reads were unaffected, because `forEachRow` and the `scalar*` helpers *did* step their statements. That is why this presented as *"the database is empty"* rather than *"the database is broken"*, and why it compiled cleanly: none of this is a type error.
+
+> **User report:** *"when I add a song it is not shown on the songs list view after I add it."* `importAudioFile` passes its `store != nil` guard, then `createImportJob` throws "no such table", and the queued import ends without ever reaching `projectOntoUI`, so `displayedSongs` is never rebuilt. See also [C13](#c13-the-app-opens-on-the-oldest-import-not-the-top-of-the-list), whose secondary defect — the `displayedSongs` refresh sitting inside the master-playlist guard — would have produced the same symptom on its own.
+
+**This was not data loss.** The legacy `UserDefaults` index was untouched and every audio file remained on disk. `reclaimUntrackedFiles` bailed via `guard let claimed = try? store.loadCommittedFileNames()` (`LibraryReconciler.swift:177`), logging *"Could not read committed file names; skipping reclaim"*, and `defaultGracePeriod` is 14 days (`:37`). Both properties were **accidental rather than designed** — they held because the database was broken. Once `exec` works, `LibraryMigration` adopts the unindexed files off disk as intended.
+
+**Fix.** `exec` now drains its statement through a new `drain(_:onRow:)` helper (`:860`), and `forEachRow` (`:898`) was folded onto the same helper so the stepping loop exists once instead of twice. `drain` tolerates `SQLITE_ROW` rather than treating it as the end, because statements such as `PRAGMA journal_mode = WAL` answer with a row before completing, and it raises `stepFailed(errorMessage(handle))` on anything other than `SQLITE_DONE`. `forEachRow` previously reported a step failure by reading *column 0* (`Self.text(stmt, 0) ?? "unknown"`), which is meaningless once the step has failed; it now reports the connection's error message.
+
+**Fixing `exec` activated `foreign_keys = ON` for the first time, which exposed a second defect that had been dormant.** `configure()` sets that pragma through `exec`, so before the fix foreign keys were off *and* no write could violate them. Turning writes back on without addressing this would have introduced a new way for the library to fail:
+
+- `persist` mirrored each playlist's `audioFileIDs` verbatim into `playlist_member`. With `foreign_keys = ON` and `ON DELETE CASCADE`, a single member id with no matching `track` row fails the insert and rolls back the **entire** snapshot, silently disabling all persistence again. Only the master playlist's membership is self-healed on load (`PlaylistService.loadOrCreateMasterPlaylist`), so a stale id in any *user* playlist was enough to do it. Membership is now filtered against the snapshot's own track ids, and each dropped id is logged at `notice` level instead of vanishing.
+
+One more silent failure was fixed alongside it. `LibraryImportPipeline.importAudioFile` recorded a failure report when `store == nil` but never called `manager.finishOneImport()`, although `AudioImportService` had already called `beginImport()`. `importProgress.active` therefore never reached zero, so `importReportToPresent` was never set and `isImporting` stayed `true` for the rest of the session — a refused import that looks like nothing happened. The report is now recorded on the main actor *before* the counter is decremented, matching the two other sites that already did this.
+
+**Verified.** 29 assertions compiled against the real `LibraryStore` / `LibrarySchema` / `Models` sources: schema creation, `user_version`, WAL, ordered membership, the full `createImportJob` + `commitImport` import path, the Songs-tab projection, orphan filtering, transaction rollback via `prune`, and durability across a reopen. On device, a fresh install creates all five tables with `user_version = 1` and `journal_mode = wal`, and a transaction both commits and rolls back.
+
+**Exploration notes.**
+- **Ruled out:** "the store is opened read-only, so writes are refused." `open` (`:183`) uses `SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX`, and refusal would raise `SQLITE_READONLY`, not succeed silently.
+- **Ruled out:** "the schema is created and then dropped." Nothing in the layer issues a `DROP`; before the fix no table ever existed.
+- **Ruled out:** "`persist` is never called." It is, from `AudioLibraryService.swift:60`, `PlaylistService.swift:89` and `LibraryMigration.swift:369`. The calls succeeded and wrote nothing.
+- **Ruled out:** "the writes fail and the error is swallowed." There was nothing to swallow for the first statement — prepare succeeded — and every statement after it failed with "no such table", which *is* swallowed, at `try?` sites including `LibraryMigration.swift:369`.
+- **Trap:** a green build is not evidence here, and neither is a green test run — [A2](#a2-both-test-targets-are-empty) is still open, so `xcodebuild test` reports zero tests and reads as a pass. This defect compiled, linked, launched and installed without complaint.
+- **To confirm any future persistence claim:** query the file directly rather than trusting the app — `sqlite3 <container>/Documents/Punches/library.sqlite "SELECT name FROM sqlite_master"`. Before this fix it returned nothing at all.
+- **Note:** this entry invalidates the *evidence* for [C1](#c1-master-playlist-recovery-destroys-every-user-playlist), [C2](#c2-cleanuporphanedfiles-deletes-untracked-files), [C3](#c3-taskdetached-races-saveplaylists-on-the-same-key) and [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see), not their conclusions. Those four are still fixed — the destructive code is genuinely gone — but their claims about transactional, atomic persistence were verified against a database that could not be written, and C12's *"nothing is deleted on launch"* held only because the read it depends on threw.
 
 ---
 
@@ -1196,6 +1243,7 @@ Switching to `.Artwork` does not detach the tap, stop the 60 Hz timer, or free t
 
 **Phase 2 — stop losing user data.** Largely landed by the `laptop` merge; what remains is listed here.
 
+5. ~~[C15](#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran) `exec` never stepped its statements~~ — **fixed**, with it the never-decremented import counter and the dormant foreign-key rollback. Nothing else in this phase can be verified until this one holds; it is listed first deliberately.
 6. ~~[C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see)~~ — **historical**; the directory is the source of truth and nothing is deleted on launch
 7. ~~[C1](#c1-master-playlist-recovery-destroys-every-user-playlist)~~ · ~~[C2](#c2-cleanuporphanedfiles-deletes-untracked-files)~~ · ~~[C3](#c3-taskdetached-races-saveplaylists-on-the-same-key)~~ — **historical**. [C5](#c5-reorderplaylistsongs-captures-index-across-a-dispatch-hop) remains open.
 8. [B7](#b7-processpendingimports-deletes-the-whole-directory) · [B6](#b6-unsynchronised-fileurlsappend-in-the-extension) — the extension side was rewritten by `laptop` to write one inbound file per share; the app-side consumer is now `LibraryImportPipeline`, so re-verify both before closing
