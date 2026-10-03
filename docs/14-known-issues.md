@@ -6,7 +6,9 @@ A severity-ranked register of every defect, dead path, and documentation error f
 
 > **What the merge changed.** `laptop` added the SQLite-backed library (`LibraryStore`, `LibrarySchema`, `LibraryMigration`, `LibraryReconciler`, `LibraryImportPipeline`, `LibraryImportReport`, `LibraryEnvironment`) and bound the four synchronized folders to the target. **C1**, **C2**, **C3**/**E6**, **C12** and **G1**/**A4**/**G1.3** are addressed by that work and are now historical. The merge itself required a follow-up commit to make the branch compile at all — see that commit for the 20 defects it carried.
 >
-> **What compiling did not catch.** A second follow-up commit was needed after that, for [C15](#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran): the library layer built cleanly and then did nothing at runtime, because `exec` prepared every statement and never stepped it. Four entries in section C were verified against a database that could not be written — see C15's closing note. A third follow-up commit fixed [C16](#c16-a-file-with-no-extension-could-never-be-imported-and-every-failure-was-reported-as-unsupported-format): with the database finally writable, imports reached the validation step and failed there, and the one message the app could show turned out to be unrelated to the cause.
+> **What compiling did not catch.** A second follow-up commit was needed after that, for [C15](#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran): the library layer built cleanly and then did nothing at runtime, because `exec` prepared every statement and never stepped it. Four entries in section C were verified against a database that could not be written — see C15's closing note. A third follow-up commit fixed [C16](#c16-a-file-with-no-extension-could-never-be-imported-and-every-failure-was-reported-as-unsupported-format): with the database finally writable, imports reached the validation step and failed there, and the one message the app could show turned out to be unrelated to the cause. A fourth fixed [C17](#c17-every-import-failed-with-a-foreign-key-violation-discarding-the-track-it-had-just-committed): with validation passing, imports reached `commitImport` and every one of them rolled itself back on a foreign-key violation.
+>
+> **The pattern across all four.** Each defect blocked the import at a *later* step than the last, so each fix exposed the next one and none of them could have been found by reading the code alone. Three independent breakages sat between a working app and a working import. That is an argument for treating "the first end-to-end import" as a thing worth verifying directly, and an argument against assuming a pipeline stage is exercised because the code above it returns.
 
 > **About the Exploration notes.** Entries carry an **Exploration notes** block recording the hypotheses that have already been ruled out, the instrumentation that would confirm or refute the rest, and any trap for the next person to look. This exists so that a hypothesis is not re-investigated from scratch, and so that a *failed* approach is as visible as a successful one. If you test one of these, update the block — including when the test shows the entry is **wrong**. One entry has already been corrected that way: [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue) previously claimed a variable had no readers anywhere, which was false. All Critical and High entries carry the block; the Medium and Low set does not yet, and should be filled in as each is picked up.
 
@@ -25,11 +27,11 @@ A severity-ranked register of every defect, dead path, and documentation error f
 
 | Severity | Count |
 |---|---|
-| Critical | 15 |
+| Critical | 16 |
 | High | 32 |
 | Medium | 28 |
 | Low | 18 |
-| **Total** | **93** |
+| **Total** | **94** |
 
 The table counts entries, not distinct defects: [A3](#a3-app-group-entitlement-is-empty) and [B1](#b1-app-group-entitlement-is-empty) are the same root cause documented from the build side and the import side, and several entries share a single fix.
 
@@ -46,6 +48,7 @@ User-reported symptoms and the entries that explain them. A single report can ha
 | *"There is no effective metadata integration."* | [D14](#d14-no-metadata-is-read-anywhere-the-title-is-the-filename) (fixed) · [C8](#c8-the-two-audiofiletitle-fallbacks-disagree) (fixed) | D14 was the whole gap: the model had no fields for artist/album/genre and nothing read tags. Ten fields are now read, stored and shown. C8 was why even the filename-derived title was inconsistent — the two `AudioFile` initialisers disagreed about stripping the extension. |
 | *"Songs sometimes don't skip when out of the app."* | [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block) · [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) | E16 is the "sometimes": if `setActive` throws at launch, no remote handler is ever registered. E15's background timer throttling is the other half. |
 | *"it now pops up with an error when importing, however all audio types come up with the message that they are unsupported format"* | [C16](#c16-a-file-with-no-extension-could-never-be-imported-and-every-failure-was-reported-as-unsupported-format) | C16 is both causes at once: a staged file that lost its extension so `AVURLAsset` could not open it, and a `classify` that reported every error as an unsupported codec. "All audio types" is the tell — a real codec limit is format-specific, a filename problem is not. |
+| *"the library database could not be written. This is not a problem with the file. A library query failed: FOREIGN KEY constraint failed"* | [C17](#c17-every-import-failed-with-a-foreign-key-violation-discarding-the-track-it-had-just-committed) (fixed) | C17 alone. The message blamed the database and the file, and both were right to be blamed for the wrong reason: the membership row could not be written because the master playlist did not exist, and `INSERT OR IGNORE` does not suppress a foreign-key violation, so the whole commit rolled back. Every file, every time, including on a brand-new install. It only became visible once [C16](#c16-a-file-with-no-extension-could-never-be-imported-and-every-failure-was-reported-as-unsupported-format) stopped throwing first — `commitImport` had never run before that. |
 | *"When I add a song it is not shown on the songs list view after I add it."* | [C15](#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran) · [C13](#c13-the-app-opens-on-the-oldest-import-not-the-top-of-the-list) | C15 was the whole cause: no write in the library layer had ever executed, so the import aborted before it could refresh `displayedSongs`. Fixed. C13 carries a second, independent path to the same symptom — a `displayedSongs` refresh trapped inside the master-playlist guard — and is still open. |
 
 ---
@@ -644,6 +647,60 @@ When the picker's URL has an empty `pathExtension`, `name` is a bare UUID with n
 - **Ruled out:** "`validate` rejecting a legitimate file because of its duration." The duration load succeeds on a correctly-named copy; only the name was at fault.
 - **Trap:** `classify` returning `.unsupportedCodec` is not evidence that the codec is unsupported. That is the whole defect — the symptom was a lie, and the `underlying` string that would have exposed it was already in memory and never displayed.
 - **Trap:** iOS genuinely cannot decode OGG/Vorbis, Opus-in-Ogg, WMA, APE, or most video containers. `AudioContainer` identifies those *by name* so the refusal can be specific, but identification is not decode capability — `AVAudioFile` remains the authority, and `decodableExtensions` is a deliberate second opinion, not a replacement.
+
+---
+
+### C17 Every import failed with a foreign-key violation, discarding the track it had just committed
+
+**Critical — fixed.**
+
+> **User report:** *"the library database could not be written. This is not a problem with the file. A library query failed: FOREIGN KEY constraint failed"*, on every file, not as a one-off.
+
+**The mechanism.** `commitImport` writes the track row and the master-playlist membership row in **one transaction**, membership second. The membership insert was spelled `INSERT OR IGNORE`, which reads as though it tolerates anything:
+
+```sql
+-- Services/LibraryStore.swift:904, before the fix
+INSERT OR IGNORE INTO playlist_member (playlist_id, track_id, position)
+VALUES (?, ?, ?);
+```
+
+It does not. SQLite's `ON CONFLICT` clause resolves UNIQUE, NOT NULL and CHECK violations only — the documentation states plainly that *"the ON CONFLICT clause does not apply to FOREIGN KEY constraints."* So when `playlist_id` named a playlist with no row behind it, `sqlite3_step` returned `SQLITE_CONSTRAINT_FOREIGNKEY`, the store raised `.stepFailed`, and `withTransaction` rolled back — **including the `track` row inserted moments earlier in the same transaction.** A file that was copied, sniffed, decoded and duration-probed without complaint was thrown away, and the report blamed the database rather than the membership row.
+
+The schema has exactly two foreign keys, both out of `playlist_member`, so the deduction is closed: `track` is never a child, `track_id` cannot dangle because the track was just inserted in the same transaction, and therefore the violation is always `playlist_id`.
+
+**Three defects reached that state.**
+
+1. **The master could exist in memory but never in the database.** `loadOrCreateMasterPlaylist` created a master when the stored id did not resolve, but only called `savePlaylists()` if the membership repair had changed something — `guard present != expected else { return }`. A freshly created master has no members, and `expected` is the set of imported tracks, so **on an empty library both sides are `[]`**, the guard returned early, and the row was never written.
+2. **`persist` could delete the row and keep the pointer.** It prunes any playlist the projection omits, but only rewrote `meta.master_playlist_id` when a master was supplied. `meta` is a key/value table holding the id as text, not a foreign key, so **deleting a `playlist` row does not cascade into it.**
+3. **Nothing repaired it,** so `loadMasterPlaylistID` handed back the dead id on every launch, forever.
+
+**Measured, before the fix.** A harness compiled from the real `LibraryStore` / `LibrarySchema`, driving the states that reach it:
+
+| State | Playlist rows | `meta` points at | First import | Second | Third |
+|---|---|---|---|---|---|
+| Healthy control | 1 | a live row | commits | commits | commits |
+| **Brand-new install** | **0** | nothing yet | **FK violation** | **FK violation** | **FK violation** |
+| Master row pruned away | 0 (master gone) | the dead id | **FK violation** | **FK violation** | — |
+
+The middle column of that table is the finding: on a **brand-new install there is no master row at all**, so the very first import the user ever attempts failed. Not a rare state — the default one.
+
+> **Why this took a second report after C16 to surface.** It did not cause C15 or C16, and `git diff` against them shows none of these functions were touched. It was *revealed* by fixing C16: before that, `validate` threw first, so `commitImport` had **never executed even once on any install**. Three separate defects had each blocked the import at a different step, and only the outermost one was visible. This is the third consecutive instance of the library layer failing at runtime rather than at compile time — see C15 and C16.
+
+**Fix, in three layers. Any one alone leaves a silent failure behind.**
+- **`addMembership`** replaces both member inserts (`commitImport`, `ensureMembership`) with `SELECT ? WHERE EXISTS (SELECT 1 FROM playlist WHERE id = ?)`, so the parent is verified in the same statement as the insert and cannot change in between. Membership is bookkeeping about an already-committed track; it can no longer veto it. It returns whether the row was written, and `ensureMembership` now reports that instead of returning `true` unconditionally — it had been claiming success for a row it did not insert.
+- **`loadOrCreateMasterPlaylist`** saves whenever it mints a master. Without this layer the first one would let the import *report success* while the track stayed unreachable from `sortedAudioFiles`, which is driven entirely by master membership — the silent failure the layer above is silent about.
+- **`persist` retracts the master pointer** when the row it names did not survive, and **`loadMasterPlaylistID` joins `playlist`** so it never returns an id with nothing behind it. The retraction asks the database rather than the snapshot, because `prune` refuses to delete anything when handed an empty projection, so a row can legitimately outlive a snapshot that never mentioned it.
+
+**Not data loss.** The user's original file is never touched, and on failure the staged copy is moved to Trash rather than unlinked (`LibraryImportPipeline.swift:339`). The severity is Critical because the app's primary function was 100% broken with no user-side recovery — the same ground C15 and C16 are rated on.
+
+**Verified.** 34 assertions compiled from the real `LibraryStore`: the healthy path (single membership row, positions `0,1`, pointer intact), the brand-new-install first import, three consecutive imports, a pruned master, `prune`'s empty-projection refusal *not* retracting a live pointer, `ensureMembership` against both a dangling and a live playlist, and — the assertion that catches the silent failure — that every committed track is reachable from the master after the `projectOntoUI` save. Pre-fix, three of these states threw `FOREIGN KEY constraint failed` and lost the track row. The 42 metadata-reader and 50 pipeline assertions still pass.
+
+**Exploration notes.**
+- **Ruled out:** "`OR IGNORE` was meant to be the tolerance and simply is not." This is the whole defect. It is a real SQLite rule, not a bug in the build: `INSERT OR IGNORE` handles uniqueness and NOT NULL, and foreign keys are enforced by a separate mechanism that conflict resolution never reaches. Do not reach for `OR IGNORE` or `OR REPLACE` to make a foreign key go away.
+- **Ruled out:** "the metadata work caused it." `git diff` across C16 and this entry touches none of `commitImport`, `playlist_member`, `persist`, `prune` or `meta`. The FK was latent from the moment the library layer landed; C16's fix merely unblocked the path to it.
+- **Ruled out:** "the failure is in the track table." `track` is not a child table and carries no foreign keys. `playlist_member` is the only place a violation can originate.
+- **Trap:** the transaction hides the damage. The rollback discards a correct `track` row along with the bad membership row, so the database looks unchanged and the user sees only a database error. Any future secondary write inside a commit transaction gets this same veto unless it is individually guarded.
+- **Trap:** a fix that guards the insert but not the master's existence converts a loud failure into a **silent** one — the import reports success and the song never appears, because `sortedAudioFiles` is driven by master membership. Any fix here needs both halves.
 
 ---
 
@@ -1294,7 +1351,7 @@ Switching to `.Artwork` does not detach the tap, stop the 60 Hz timer, or free t
 
 **Phase 2 — stop losing user data.** Largely landed by the `laptop` merge; what remains is listed here.
 
-5. ~~[C15](#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran) `exec` never stepped its statements~~ — **fixed**, with it the never-decremented import counter and the dormant foreign-key rollback. Nothing else in this phase can be verified until this one holds; it is listed first deliberately.
+5. ~~[C15](#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran) `exec` never stepped its statements~~ — **fixed**, with it the never-decremented import counter and the dormant foreign-key rollback. Nothing else in this phase can be verified until this one holds; it is listed first deliberately. ~~[C17](#c17-every-import-failed-with-a-foreign-key-violation-discarding-the-track-it-had-just-committed)~~ is fixed too, and it was the last thing standing between the user and a successful import — found only after C15 and C16, because each of the three blocked the pipeline one step later than the last.
 6. ~~[C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see)~~ — **historical**; the directory is the source of truth and nothing is deleted on launch
 7. ~~[C1](#c1-master-playlist-recovery-destroys-every-user-playlist)~~ · ~~[C2](#c2-cleanuporphanedfiles-deletes-untracked-files)~~ · ~~[C3](#c3-taskdetached-races-saveplaylists-on-the-same-key)~~ — **historical**. [C5](#c5-reorderplaylistsongs-captures-index-across-a-dispatch-hop) remains open.
 8. [B7](#b7-processpendingimports-deletes-the-whole-directory) · [B6](#b6-unsynchronised-fileurlsappend-in-the-extension) — the extension side was rewritten by `laptop` to write one inbound file per share; the app-side consumer is now `LibraryImportPipeline`, so re-verify both before closing
