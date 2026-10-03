@@ -89,7 +89,7 @@ struct LibraryMigration {
         summary.unreadableIndexRecords = index.unreadable
 
         summary.adoptedFromDisk = await adoptUnindexedFiles(
-            index.byName: index.byName,
+            index: index.byName,
             onDisk: pendingOnDisk
         )
         summary.recoveredFromIndex = await recoverIndexedFiles(index.records)
@@ -133,7 +133,7 @@ struct LibraryMigration {
         var index = LegacyIndex()
 
         if let data = defaults.data(forKey: LegacyKey.tracks) {
-            let decoded = Self.lossyDecode([AudioFile].self, from: data)
+            let decoded = Self.lossyDecode(AudioFile.self, from: data)
             index.records = decoded.values
             index.unreadable += decoded.failures
             for record in decoded.values {
@@ -142,7 +142,7 @@ struct LibraryMigration {
         }
 
         if let data = defaults.data(forKey: LegacyKey.playlists) {
-            let decoded = Self.lossyDecode([Playlist].self, from: data)
+            let decoded = Self.lossyDecode(Playlist.self, from: data)
             index.playlists = decoded.values
             index.unreadable += decoded.failures
         }
@@ -207,6 +207,16 @@ struct LibraryMigration {
             let name = source.lastPathComponent
             let known = byName[name]
 
+            // Probed before the record is built: an `await` is not permitted
+            // inside the `??` autoclosure, and probing unconditionally would
+            // cost an asset read per file even when the index already knew.
+            let duration: Float
+            if let known {
+                duration = known.audioDuration
+            } else {
+                duration = await Self.probeDuration(of: source) ?? 0
+            }
+
             let record = TrackRecord(
                 id: UUID(),
                 fileName: "",
@@ -214,7 +224,7 @@ struct LibraryMigration {
                 displayTitle: known?.title ?? (name as NSString).deletingPathExtension,
                 ext: source.pathExtension,
                 byteSize: Self.byteSize(of: source),
-                duration: known?.audioDuration ?? (await Self.probeDuration(of: source)) ?? 0,
+                duration: duration,
                 dateAdded: known?.dateAdded ?? Self.dateAdded(of: source),
                 artworkName: known?.artworkImageName,
                 originBookmark: nil,
@@ -245,7 +255,7 @@ struct LibraryMigration {
         var recovered = 0
 
         for record in records {
-            if let existing = FileManager.default.fileExists(
+            if FileManager.default.fileExists(
                 atPath: environment.tracks.appendingPathComponent(record.fileName).path
             ) {
                 continue  // already in place

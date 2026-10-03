@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import os
 
 /// Reads and writes the library index.
 ///
@@ -29,7 +30,7 @@ final class AudioLibraryService {
         // their library. Never write back to UserDefaults in this state — two
         // writers to the same key is how the old all-or-nothing write lost data.
         guard let data = UserDefaults.standard.data(forKey: manager.audioFilesKey) else { return }
-        let decoded = LibraryMigration.lossyDecode([AudioFile].self, from: data)
+        let decoded = LibraryMigration.lossyDecode(AudioFile.self, from: data)
         manager.audioFiles = decoded.values.filter { file in
             let exists = FileManager.default.fileExists(atPath: file.fileURL.path)
             if !exists {
@@ -51,7 +52,7 @@ final class AudioLibraryService {
 
         let snapshot = LibrarySnapshot(
             tracks: manager.audioFiles,
-            playlists: manager.playlists.map { PlaylistRecord($0) },
+            playlists: manager.playlists,
             masterPlaylistID: manager.masterPlaylistID
         )
 

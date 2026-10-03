@@ -230,7 +230,7 @@ struct LibraryEnvironment {
                     withIntermediateDirectories: true
                 )
             } catch {
-                logger.error(
+                Self.logger.error(
                     "Could not create \(directory.path, privacy: .public): \(error.localizedDescription, privacy: .public)"
                 )
                 throw error

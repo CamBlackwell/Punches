@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import os
 
 final class PlaylistService {
     unowned let manager: AudioManager
@@ -80,7 +81,7 @@ final class PlaylistService {
 
         let snapshot = LibrarySnapshot(
             tracks: manager.audioFiles,
-            playlists: manager.playlists.map { PlaylistRecord($0) },
+            playlists: manager.playlists,
             masterPlaylistID: manager.masterPlaylistID
         )
 
@@ -103,12 +104,12 @@ final class PlaylistService {
         }
 
         guard let data = UserDefaults.standard.data(forKey: manager.playlistsKey) else { return }
-        let decoded = LibraryMigration.lossyDecode([Playlist].self, from: data)
+        let decoded = LibraryMigration.lossyDecode(Playlist.self, from: data)
         manager.playlists = decoded.values
     }
 
     private func loadLegacyMasterID() throws -> UUID? {
-        let data = UserDefaults.standard.data(forKey: manager.masterPlaylistKey) ?? return nil
+        guard let data = UserDefaults.standard.data(forKey: manager.masterPlaylistKey) else { return nil }
         return try JSONDecoder().decode(UUID.self, from: data)
     }
 

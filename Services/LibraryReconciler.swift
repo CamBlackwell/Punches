@@ -102,7 +102,7 @@ struct LibraryReconciler {
     /// transaction with the track insert, and this is the belt to that braces.
     @discardableResult
     func restoreOrphanedMembership() -> Int {
-        guard let masterID = try? store.loadMasterPlaylistID(), let masterID else {
+        guard let masterID = try? store.loadMasterPlaylistID() else {
             return 0
         }
 

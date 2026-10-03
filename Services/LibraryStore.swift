@@ -51,23 +51,6 @@ struct PlaylistRecord {
     var isMaster: Bool
     var memberIDs: [UUID]
 
-    /// Projects the view-facing model into a row.
-    ///
-    /// `isMaster` is passed separately because the store is the only place that
-    /// knows which playlist is the master; the model has no such concept, and
-    /// inventing one here would let a decode failure reassign it.
-    init(_ playlist: Playlist, isMaster: Bool = false) {
-        self.id = playlist.id
-        self.name = playlist.name
-        self.isAlbum = playlist.isAlbum
-        self.coverName = playlist.artworkImageName
-        self.coverIsManual = playlist.coverIsManual
-        self.artist = playlist.artist
-        self.dateAdded = playlist.dateAdded
-        self.isMaster = isMaster
-        self.memberIDs = playlist.audioFileIDs
-    }
-
     var playlist: Playlist {
         Playlist(
             id: id,
@@ -78,6 +61,30 @@ struct PlaylistRecord {
             isAlbum: isAlbum,
             coverIsManual: coverIsManual,
             artist: artist
+        )
+    }
+}
+
+// Declared in an extension rather than in the struct body: any initialiser
+// written in the body suppresses the synthesised memberwise initialiser, and
+// `LibraryMigration` needs that one to build rows with filtered membership.
+extension PlaylistRecord {
+    /// Projects the view-facing model into a row.
+    ///
+    /// `isMaster` is passed separately because the store is the only place that
+    /// knows which playlist is the master; the model has no such concept, and
+    /// inventing one here would let a decode failure reassign it.
+    init(_ playlist: Playlist, isMaster: Bool = false) {
+        self.init(
+            id: playlist.id,
+            name: playlist.name,
+            isAlbum: playlist.isAlbum,
+            coverName: playlist.artworkImageName,
+            coverIsManual: playlist.coverIsManual,
+            artist: playlist.artist,
+            dateAdded: playlist.dateAdded,
+            isMaster: isMaster,
+            memberIDs: playlist.audioFileIDs
         )
     }
 }
@@ -465,6 +472,11 @@ final class LibraryStore: @unchecked Sendable {
         origin: ImportOrigin
     ) throws -> UUID {
         let now = Date()
+        // Hoisted out of the `bindings:` literal: a chain of `Optional.map`
+        // plus `??` alongside inferred integer literals is more than the type
+        // checker resolves in reasonable time.
+        let urlBinding: Binding = sourceURL.map { Binding.blob($0) } ?? .null
+        let originBinding = Binding.int(origin == .shareExtension ? 1 : 0)
         try withLock {
             try exec(
                 """
@@ -482,9 +494,9 @@ final class LibraryStore: @unchecked Sendable {
                     .text(id.uuidString),
                     .text(sourceName),
                     .text(sourceExt),
-                    sourceURL.map { .blob($0) } ?? .null,
-                    .int(origin == .shareExtension ? 1 : 0),
-                    .int(ImportJobState.queued.rawValue),
+                    urlBinding,
+                    originBinding,
+                    .int(Int64(ImportJobState.queued.rawValue)),
                     .double(now.timeIntervalSince1970),
                     .double(now.timeIntervalSince1970),
                 ]
@@ -501,6 +513,10 @@ final class LibraryStore: @unchecked Sendable {
         bumpAttempts: Bool = false,
         bookmark: Data? = nil
     ) throws {
+        let stagedBinding: Binding = stagedName.map { Binding.text($0) } ?? .null
+        let bookmarkBinding: Binding = bookmark.map { Binding.blob($0) } ?? .null
+        let errorBinding: Binding = error.map { Binding.text($0) } ?? .null
+        let attemptsBinding = Binding.int(bumpAttempts ? 1 : 0)
         try withLock {
             try exec(
                 """
@@ -514,11 +530,11 @@ final class LibraryStore: @unchecked Sendable {
                 WHERE id = ?;
                 """,
                 bindings: [
-                    .int(state.rawValue),
-                    stagedName.map { .text($0) } ?? .null,
-                    bookmark.map { .blob($0) } ?? .null,
-                    error.map { .text($0) } ?? .null,
-                    .int(bumpAttempts ? 1 : 0),
+                    .int(Int64(state.rawValue)),
+                    stagedBinding,
+                    bookmarkBinding,
+                    errorBinding,
+                    attemptsBinding,
                     .double(Date().timeIntervalSince1970),
                     .text(id.uuidString),
                 ]
@@ -580,6 +596,10 @@ final class LibraryStore: @unchecked Sendable {
         addToPlaylist playlistID: UUID?,
         position: Int?
     ) throws {
+        let sourceNameBinding: Binding = record.sourceName.map { Binding.text($0) } ?? .null
+        let artworkBinding: Binding = record.artworkName.map { Binding.text($0) } ?? .null
+        let bookmarkBinding: Binding = record.originBookmark.map { Binding.blob($0) } ?? .null
+        let importedViaBinding: Binding = record.importedVia.map { Binding.text($0.rawValue) } ?? .null
         try withLock {
             try withTransaction {
                 try exec(
@@ -602,16 +622,16 @@ final class LibraryStore: @unchecked Sendable {
                     bindings: [
                         .text(record.id.uuidString),
                         .text(record.fileName),
-                        record.sourceName.map { .text($0) } ?? .null,
+                        sourceNameBinding,
                         .text(record.displayTitle),
                         .text(record.ext),
                         .int(record.byteSize),
                         .double(Double(record.duration)),
                         .double(record.dateAdded.timeIntervalSince1970),
-                        record.artworkName.map { .text($0) } ?? .null,
-                        record.originBookmark.map { .blob($0) } ?? .null,
-                        .int(record.state.rawValue),
-                        record.importedVia.map { .text($0.rawValue) } ?? .null,
+                        artworkBinding,
+                        bookmarkBinding,
+                        .int(Int64(record.state.rawValue)),
+                        importedViaBinding,
                     ]
                 )
 
@@ -625,7 +645,7 @@ final class LibraryStore: @unchecked Sendable {
                         bindings: [
                             .text(playlistID.uuidString),
                             .text(record.id.uuidString),
-                            .int(Int64(position ?? next)),
+                            .int(position.map(Int64.init) ?? next),
                         ]
                     )
                 }
@@ -637,7 +657,7 @@ final class LibraryStore: @unchecked Sendable {
                     WHERE id = ?;
                     """,
                     bindings: [
-                        .int(ImportJobState.committed.rawValue),
+                        .int(Int64(ImportJobState.committed.rawValue)),
                         .double(Date().timeIntervalSince1970),
                         .text(jobID.uuidString),
                     ]
@@ -665,7 +685,7 @@ final class LibraryStore: @unchecked Sendable {
                         .text(sourceName),
                         .text((sourceName as NSString).deletingPathExtension),
                         .double(Date().timeIntervalSince1970),
-                        .int(TrackState.rejected.rawValue),
+                        .int(Int64(TrackState.rejected.rawValue)),
                         .text(reason),
                     ]
                 )
@@ -673,7 +693,7 @@ final class LibraryStore: @unchecked Sendable {
                 try exec(
                     "UPDATE import_job SET state = ?, last_error = ?, updated_at = ? WHERE id = ?;",
                     bindings: [
-                        .int(ImportJobState.rejected.rawValue),
+                        .int(Int64(ImportJobState.rejected.rawValue)),
                         .text(reason),
                         .double(Date().timeIntervalSince1970),
                         .text(jobID.uuidString),
@@ -719,7 +739,7 @@ final class LibraryStore: @unchecked Sendable {
         try withLock {
             try exec(
                 "UPDATE track SET state = ? WHERE id = ?;",
-                bindings: [.int(state.rawValue), .text(id.uuidString)]
+                bindings: [.int(Int64(state.rawValue)), .text(id.uuidString)]
             )
         }
     }
@@ -737,7 +757,7 @@ final class LibraryStore: @unchecked Sendable {
                 """,
                 bindings: [
                     .text(masterID.uuidString),
-                    .int(TrackState.committed.rawValue),
+                    .int(Int64(TrackState.committed.rawValue)),
                 ]
             ) { stmt in
                 guard let text = Self.text(stmt, 0), let id = UUID(uuidString: text) else { return }
@@ -753,7 +773,7 @@ final class LibraryStore: @unchecked Sendable {
             var map: [String: UUID] = [:]
             try forEachRow(
                 "SELECT id, file_name FROM track WHERE state = ?;",
-                bindings: [.int(TrackState.committed.rawValue)]
+                bindings: [.int(Int64(TrackState.committed.rawValue))]
             ) { stmt in
                 guard let name = Self.text(stmt, 1),
                       let id = UUID(uuidString: Self.text(stmt, 0) ?? "")

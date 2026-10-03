@@ -104,7 +104,7 @@ static half3 tunnelPalette(half t, half3 a, half3 b, half3 c, half3 d) {
     float intensity,
     float qualitySteps,      // e.g. 60 (low) ... 200 (high)
     float qualityFolds,       // e.g. 5 (low) ... 9 (high)
-    texture2d blueNoise       // 64x64 tiling noise, for the dither below
+    texture2d<half, access::sample> blueNoise   // 64x64 tiling noise, for the dither below
 ) {
     half2 uv = half2((position - 0.5 * size) / size.y);
     half t = half(time * speed);
@@ -148,8 +148,8 @@ static half3 tunnelPalette(half t, half3 a, half3 b, half3 c, half3 d) {
     // very shallow over long stretches, which is exactly where 8-bit output
     // bands; a sub-LSB noise offset removes it. One linear-filtered tap on a
     // 64x64 tile, so the repeat is not perceptible at this amplitude.
-    constexpr sampler blueNoiseSampler(blueNoise::address::repeat, blueNoise::filter::linear);
-    half3 dither = half3(blueNoise.sample(blueNoiseSampler, position / 64.0h).rgb - 0.5h);
+    constexpr sampler blueNoiseSampler(address::repeat, filter::linear);
+    half3 dither = half3(blueNoise.sample(blueNoiseSampler, position / 64.0f).rgb - 0.5h);
     col = clamp(col + dither * (1.0h / 255.0h), 0.0h, 1.0h);
 
     return half4(col, color.a);
@@ -169,13 +169,13 @@ static half3 tunnelPalette(half t, half3 a, half3 b, half3 c, half3 d) {
 [[ stitchable ]] half4 grainOverlay(
     float2 position,
     half4 color,
-    texture2d blueNoise,
+    texture2d<half, access::sample> blueNoise,
     float strength
 ) {
-    constexpr sampler blueNoiseSampler(blueNoise::address::repeat, blueNoise::filter::linear);
-    half2 uv = position / 64.0h;
+    constexpr sampler blueNoiseSampler(address::repeat, filter::linear);
+    float2 uv = position / 64.0f;
     half3 grain = half3(blueNoise.sample(blueNoiseSampler, uv).rgb - 0.5h);
 
-    half3 out_ = color.rgb + grain * clamp(strength, 0.0h, 1.0h);
+    half3 out_ = color.rgb + grain * half(clamp(strength, 0.0f, 1.0f));
     return half4(clamp(out_, 0.0h, 1.0h), color.a);
 }

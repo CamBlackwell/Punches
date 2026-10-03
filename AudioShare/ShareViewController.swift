@@ -117,7 +117,7 @@ class ShareViewController: UIViewController {
                 return
             }
             
-            self.handoffToSharedContainer(fileURLs)
+            self.handOffToSharedContainer(fileURLs)
             
             if shouldOpenApp {
                 self.openMainApp()

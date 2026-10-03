@@ -3,6 +3,7 @@ import AVFoundation
 import Combine
 import MediaPlayer
 import SwiftUI
+import os
 
 class AudioManager: NSObject, ObservableObject {
     @Published var audioFiles: [AudioFile] = []
@@ -142,19 +143,17 @@ class AudioManager: NSObject, ObservableObject {
             return
         }
 
-        if let environment = libraryEnvironment {
-            let summary = await LibraryMigration(
-                environment: environment,
-                store: store,
-                defaults: .standard
-            ).runIfNeeded()
+        let summary = await LibraryMigration(
+            environment: libraryEnvironment,
+            store: store,
+            defaults: .standard
+        ).runIfNeeded()
 
-            if summary.adoptedFromDisk > 0 || summary.recoveredFromIndex > 0 {
-                await MainActor.run {
-                    self.libraryService.loadAudioFiles()
-                    self.playlistService.loadPlaylists()
-                    self.playlistService.loadOrCreateMasterPlaylist()
-                }
+        if summary.adoptedFromDisk > 0 || summary.recoveredFromIndex > 0 {
+            await MainActor.run {
+                self.libraryService.loadAudioFiles()
+                self.playlistService.loadPlaylists()
+                self.playlistService.loadOrCreateMasterPlaylist()
             }
         }
 

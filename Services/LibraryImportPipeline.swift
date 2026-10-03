@@ -634,8 +634,10 @@ final class LibraryImportPipeline {
     }
 
     private static func makeBookmark(for url: URL) -> Data? {
+        // `.withSecurityScope` is macOS-only; iOS resolves plain bookmarks
+        // against the app sandbox, so no options are correct here.
         try? url.bookmarkData(
-            options: .withSecurityScope,
+            options: [],
             includingResourceValuesForKeys: nil,
             relativeTo: nil
         )
@@ -646,7 +648,7 @@ final class LibraryImportPipeline {
         var isStale = false
         guard let url = try? URL(
             resolvingBookmarkData: data,
-            options: .withSecurityScope,
+            options: [],
             relativeTo: nil,
             bookmarkDataIsStale: &isStale
         ) else { return nil }

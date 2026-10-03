@@ -6,7 +6,7 @@ import Foundation
 /// string that no view ever read, and a file that silently failed to appear. The
 /// app had no way to distinguish "refused" from "never existed", which is why
 /// every failure was reported as lost data.
-enum ImportFailure: String, Hashable, CaseIterable {
+enum ImportFailure: String, Hashable, CaseIterable, LocalizedError {
     /// The app has no security scope for this file.
     case noPermission
     /// iCloud Drive / Files provider had not materialised the bytes.
@@ -72,6 +72,12 @@ enum ImportFailure: String, Hashable, CaseIterable {
         }
     }
 
+    // MARK: - LocalizedError
+
+    /// `detail` is the message that actually explains the failure; `title` is
+    /// the short label the report rows show.
+    var errorDescription: String? { detail }
+
     /// Classifies a thrown error, so callers do not have to.
     static func classify(_ error: Error) -> ImportFailure {
         if let failure = error as? ImportFailure { return failure }
@@ -86,7 +92,7 @@ enum ImportFailure: String, Hashable, CaseIterable {
             return .noPermission
         case NSFileReadNoSuchFileError:
             return .sourceVanished
-        case NSFileWriteNoSpaceError, NSFileWriteOutOfSpaceError:
+        case NSFileWriteOutOfSpaceError:
             return .diskFull
         case NSFileWriteFileExistsError:
             return .duplicate
