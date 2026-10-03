@@ -70,15 +70,24 @@ final class LibraryImportPipeline {
     /// unchanged.
     func importAudioFile(from url: URL) {
         guard store != nil else {
-            publish(
-                ImportReport(
-                    failed: [FailedImport(
+            // `AudioImportService` has already called `beginImport()`, which
+            // incremented the batch counter. Recording the failure has to happen
+            // on the main actor *before* `finishOneImport()`, and the counter has
+            // to be decremented at all: skipping it leaves `active` above zero
+            // forever, so the report is never presented and `isImporting` never
+            // clears — a refused import that looks like nothing happened.
+            Task { @MainActor in
+                var report = self.manager.lastImportReport ?? ImportReport()
+                report.failed.append(
+                    FailedImport(
                         name: url.lastPathComponent,
                         failure: .noPermission,
                         underlying: "No library store"
-                    )]
+                    )
                 )
-            )
+                self.manager.lastImportReport = report
+                self.manager.finishOneImport()
+            }
             return
         }
 
@@ -589,12 +598,6 @@ final class LibraryImportPipeline {
 
         if manager.playbackQueue.count == manager.audioFiles.count - 1 {
             manager.playbackQueue = manager.sortedAudioFiles
-        }
-    }
-
-    private func publish(_ report: ImportReport) {
-        Task { @MainActor in
-            manager.lastImportReport = report
         }
     }
 

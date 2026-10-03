@@ -337,8 +337,13 @@ final class LibraryStore: @unchecked Sendable {
                 try prune(table: "track", keeping: trackIDs)
 
                 let playlistIDs = snapshot.playlists.map { $0.id.uuidString }
+                let knownTrackIDs = Set(trackIDs)
                 for playlist in snapshot.playlists {
-                    try upsertPlaylist(playlist, isMaster: playlist.id == snapshot.masterPlaylistID)
+                    try upsertPlaylist(
+                        playlist,
+                        isMaster: playlist.id == snapshot.masterPlaylistID,
+                        keepingTracks: knownTrackIDs
+                    )
                 }
                 try prune(table: "playlist", keeping: playlistIDs)
 
@@ -387,7 +392,18 @@ final class LibraryStore: @unchecked Sendable {
         )
     }
 
-    private func upsertPlaylist(_ playlist: Playlist, isMaster: Bool) throws {
+    /// - Parameter keepingTracks: The ids of every track row that exists after
+    ///   this snapshot's track writes, as UUID strings. Membership is filtered
+    ///   against it because `foreign_keys` is `ON` with `ON DELETE CASCADE`: a
+    ///   single member id with no track row fails the insert and rolls back the
+    ///   entire snapshot, silently disabling all persistence. Only the master
+    ///   playlist's membership is repaired on load, so a stale id in any *user*
+    ///   playlist would otherwise be enough to do that.
+    private func upsertPlaylist(
+        _ playlist: Playlist,
+        isMaster: Bool,
+        keepingTracks: Set<String>
+    ) throws {
         try exec(
             """
             INSERT INTO playlist (id, name, is_album, cover_name, cover_manual, artist, date_added, is_master)
@@ -413,11 +429,22 @@ final class LibraryStore: @unchecked Sendable {
             ]
         )
 
-        // Membership is a full mirror of the projection's ordered id array.
+        // Membership is a full mirror of the projection's ordered id array, minus
+        // ids that have no track row (see `keepingTracks`).
+        let members = playlist.audioFileIDs.filter { keepingTracks.contains($0.uuidString) }
+        if members.count != playlist.audioFileIDs.count {
+            Self.logger.notice(
+                """
+                Dropped \(playlist.audioFileIDs.count - members.count) orphaned member(s) from \
+                playlist \(playlist.name, privacy: .public); no matching track row.
+                """
+            )
+        }
+
         try exec("DELETE FROM playlist_member WHERE playlist_id = ?;",
                  bindings: [.text(playlist.id.uuidString)])
 
-        for (position, memberID) in playlist.audioFileIDs.enumerated() {
+        for (position, memberID) in members.enumerated() {
             try exec(
                 "INSERT OR REPLACE INTO playlist_member (playlist_id, track_id, position) VALUES (?, ?, ?);",
                 bindings: [
@@ -812,9 +839,38 @@ final class LibraryStore: @unchecked Sendable {
         }
     }
 
+    /// Runs a statement for its effect, discarding any rows.
+    ///
+    /// The statement is drained to completion. `sqlite3_prepare_v2` only *compiles*
+    /// SQL — nothing is executed until the statement is stepped at least once — so
+    /// finalising without stepping discards the statement entirely.
     private func exec(_ sql: String, bindings: [Binding] = []) throws {
         try withLock {
-            try query(sql, bindings: bindings) { _ in }
+            try query(sql, bindings: bindings) { stmt in
+                try drain(stmt)
+            }
+        }
+    }
+
+    /// Steps `stmt` until it is finished, invoking `body` once per row.
+    ///
+    /// Every read and write in this store goes through here. `SQLITE_ROW` is
+    /// tolerated rather than treated as the end because statements such as
+    /// `PRAGMA journal_mode = WAL` answer with a row before completing.
+    private func drain(
+        _ stmt: OpaquePointer,
+        onRow body: (OpaquePointer) throws -> Void = { _ in }
+    ) throws {
+        guard let handle else { throw LibraryStoreError.notInitialised }
+
+        var status = sqlite3_step(stmt)
+        while status == SQLITE_ROW {
+            try body(stmt)
+            status = sqlite3_step(stmt)
+        }
+
+        guard status == SQLITE_DONE else {
+            throw LibraryStoreError.stepFailed(errorMessage(handle))
         }
     }
 
@@ -845,14 +901,7 @@ final class LibraryStore: @unchecked Sendable {
         _ body: (OpaquePointer) throws -> Void
     ) throws {
         try query(sql, bindings: bindings) { stmt in
-            var status = sqlite3_step(stmt)
-            while status == SQLITE_ROW {
-                try body(stmt)
-                status = sqlite3_step(stmt)
-            }
-            guard status == SQLITE_DONE else {
-                throw LibraryStoreError.stepFailed(Self.text(stmt, 0) ?? "unknown")
-            }
+            try drain(stmt, onRow: body)
         }
     }
 
