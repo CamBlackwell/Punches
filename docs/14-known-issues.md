@@ -43,7 +43,7 @@ User-reported symptoms and the entries that explain them. A single report can ha
 | *"There is no file permanence; files disappear after closing the app."* | [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see) · [C2](#c2-cleanuporphanedfiles-deletes-untracked-files) · [B7](#b7-processpendingimports-deletes-the-whole-directory) | C12 is the complete chain and the one to fix first: the index goes empty, then cleanup deletes the files. |
 | *"Auto next song needs some work."* | [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) · [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue) · [C4](#c4-reordering-does-not-update-playbackqueue) | E15 is the duplication and the stale-callback race. D1 is why the loop toggle appears not to work. |
 | *"Songs should default to the top of the list, not the bottom."* | [C13](#c13-the-app-opens-on-the-oldest-import-not-the-top-of-the-list) · [C14](#c14-manual-sort-order-is-silently-discarded) | The sort is correct. C13 is the unsorted `audioFiles.first` fallback used for the default selection; C14 is manual order being discarded on recompute. |
-| *"There is no effective metadata integration."* | [D14](#d14-no-metadata-is-read-anywhere-the-title-is-the-filename) · [C8](#c8-the-two-audiofiletitle-fallbacks-disagree) | D14 is the whole gap: the model has no fields for artist/album/genre and nothing reads tags. C8 is why even the filename-derived title is inconsistent — the two `AudioFile` initialisers disagree about stripping the extension. |
+| *"There is no effective metadata integration."* | [D14](#d14-no-metadata-is-read-anywhere-the-title-is-the-filename) (fixed) · [C8](#c8-the-two-audiofiletitle-fallbacks-disagree) (fixed) | D14 was the whole gap: the model had no fields for artist/album/genre and nothing read tags. Ten fields are now read, stored and shown. C8 was why even the filename-derived title was inconsistent — the two `AudioFile` initialisers disagreed about stripping the extension. |
 | *"Songs sometimes don't skip when out of the app."* | [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block) · [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) | E16 is the "sometimes": if `setActive` throws at launch, no remote handler is ever registered. E15's background timer throttling is the other half. |
 | *"it now pops up with an error when importing, however all audio types come up with the message that they are unsupported format"* | [C16](#c16-a-file-with-no-extension-could-never-be-imported-and-every-failure-was-reported-as-unsupported-format) | C16 is both causes at once: a staged file that lost its extension so `AVURLAsset` could not open it, and a `classify` that reported every error as an unsupported codec. "All audio types" is the tell — a real codec limit is format-specific, a filename problem is not. |
 | *"When I add a song it is not shown on the songs list view after I add it."* | [C15](#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran) · [C13](#c13-the-app-opens-on-the-oldest-import-not-the-top-of-the-list) | C15 was the whole cause: no write in the library layer had ever executed, so the import aborted before it could refresh `displayedSongs`. Fixed. C13 carries a second, independent path to the same symptom — a `displayedSongs` refresh trapped inside the master-playlist guard — and is still open. |
@@ -448,11 +448,13 @@ The same function hops to `DispatchQueue.main.async` (`:97`) before writing `sel
 
 ### C8 The two `AudioFile.title` fallbacks disagree
 
-**Medium.**
+**Medium — fixed.**
 
-`Models.swift` import path gives `title == "song"`; the `?? fileName` fallback gives `"song.mp3"`. The fallback is currently unreachable — a non-optional `String` makes the synthesised `init(from:)` **throw** on a missing key rather than pass `nil` — so this is latent. A hand-written decoder or a schema migration would activate it.
+`Models.swift` import path gave `title == "song"`; the `?? fileName` fallback gave `"song.mp3"`. The fallback was unreachable at the time — a non-optional `String` made the synthesised `init(from:)` **throw** on a missing key rather than pass `nil` — so this was latent, and this entry specifically warned that *"a hand-written decoder or a schema migration would activate it."*
 
-**Fix:** use `deletingPathExtension`.
+**Fixed by routing all three call sites through one function**, `AudioFile.title(from:)`, which uses `deletingPathExtension`: both initialisers, and the `init(from:)` that [D14](#d14-no-metadata-is-read-anywhere-the-title-is-the-filename) added. So the decoder shipped with the latent bug already removed, rather than switching it on.
+
+**Verified** by decoding two legacy blobs against the real `Models.swift`: one with no `title` key falls back to `"song"` rather than `"song.mp3"`, and one with a tag title keeps it.
 
 ### C9 No serial write queue for `UserDefaults`
 
@@ -786,39 +788,43 @@ No `XCTestCase`, no `test` methods. A print-based utility with a `FrequencyMappe
 
 ### D14 No metadata is read anywhere; the title is the filename
 
-**High.**
+**High — fixed.**
 
 > **User report:** *"there is no effective metadata integration."*
 
-This is not a display gap. **The codebase never reads audio metadata at all.** A repository-wide search for `AVMetadataItem`, `commonMetadata`, `artist`, `album`, `genre` returns **zero hits in any `.swift` file**. The only `AVAsset` usage in the project is the import service's single-property duration read.
+**Was.** **The codebase never read audio metadata at all.** A repository-wide search for `AVMetadataItem`, `commonMetadata`, `artist`, `album`, `genre` returned **zero hits in any `.swift` file**. The only `AVAsset` usage was the import service's single-property duration read.
 
-The model cannot represent metadata even if some were available (`Models.swift:3-32`). `AudioFile` carries exactly six fields — `id`, `fileName`, `dateAdded`, `audioDuration`, `artworkImageName`, `title` — and **no artist, album, genre, track number, year, or comment**. There is no `Codable` upgrade path for adding any, because the conformance is synthesized with no `decodeIfPresent` defaults (see [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see)).
+The model could not represent metadata even if some were available. `AudioFile` carried exactly six fields — `id`, `fileName`, `dateAdded`, `audioDuration`, `artworkImageName`, `title` — and **no artist, album, genre, track number, year, or comment**. There was no `Codable` upgrade path for adding any, because the conformance was synthesised with no `decodeIfPresent` defaults (see [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see)).
 
-What exists instead:
-
-| Concern | Current behaviour | Where |
+| Concern | Was | Now |
 |---|---|---|
-| Title | filename minus extension, set once at import | `Models.swift:21` |
-| Duration | `try await asset.load(.duration)` — the **only** metadata read | `AudioImportService.swift:55-57` |
-| Artist / album / genre | no field on `AudioFile`, no read, no UI | — |
-| **Album** | **a user-constructed collection, not metadata** — `Playlist` with `isAlbum` and a manually-typed `artist`, both persisted | `Models.swift:40-113` |
-| Embedded artwork | never extracted; only set by hand via `ArtworkService.setArtwork` | `Services/ArtworkService.swift` |
-| Search | matches `title`; also matches album title and **manually-typed** album artist | `View/content_view.swift:272`, `:282-287` |
+| Title | filename minus extension, set once at import | tag title when the file has one, filename otherwise |
+| Duration | the only metadata read that existed | unchanged — but now read by content, see [C16](#c16-a-file-with-no-extension-could-never-be-imported-and-every-failure-was-reported-as-unsupported-format) |
+| Artist / album / album artist / genre / year / track / disc / comment | no field, no read, no UI | read, stored, shown under the title |
+| Embedded artwork | never extracted; only set by hand | extracted at import and by the backfill sweep, into the existing `artworkImageName` path |
+| **Album** | a user-constructed collection, not metadata | **still a user-constructed collection.** `Playlist.isAlbum` and its manually-typed `artist` are untouched |
+| Search | matches `title` only | still matches `title` only |
 
-> **The album feature makes this entry more visible, not smaller.** An album *looks* like the thing audio metadata would give you, so a user reading the grid will reasonably expect the artist line to be the real one from the file's tags. It is not: it is a string the user typed into an alert, and the album's membership is whatever order they added the songs in. `Playlist.artist` was added **specifically to `Playlist`, not `AudioFile`**, because adding fields to `AudioFile` is the [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see) trigger. The honest framing is that albums are a manual curation feature layered on top of a library with no metadata, not a first step toward reading it.
+**Fixed in five parts.**
+- **`AudioMetadata` / `AudioMetadataReader`** (`Services/AudioMetadata.swift`) read `asset.load(.metadata)` and map it. Ten fields — title, artist, album, album artist, genre, year, track number/total, disc number/total, comment — plus embedded artwork as bytes, plus the stream's sample rate and channel count. It never throws: a missing tag is not an error, because refusing a track over malformed metadata would repeat [C16](#c16-a-file-with-no-extension-could-never-be-imported-and-every-failure-was-reported-as-unsupported-format)'s mistake of letting a secondary concern veto the primary one.
+- **`AudioFile`** gained the same ten fields with a hand-written `CodingKeys` and `init(from:)` using `decodeIfPresent`, so a pre-existing decoded blob still loads. This was the [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see) hazard the entry warned about, landed in the same change as the fix for it rather than before it.
+- **Schema v2** (`Services/LibrarySchema.swift`) adds the columns. All nullable, and `NULL` means "this file has no such tag" rather than "this file was never read" — which is why `tags_read` is a separate column rather than an inference from the tags being empty.
+- **`LibraryTagSweep`** (`Services/LibraryTagSweep.swift`) reads tags for tracks that predate metadata, once each, at launch, yielding between files.
+- **`AudioFileRow`** (`View/content_view.swift`) renders `subtitle` — artist · album · year, whatever the file carried, and nothing at all when it carried nothing.
 
-Two of the table's rows are the same defect wearing different clothes. The import path builds `AVURLAsset(url: options: nil)` (`AudioImportService.swift:55`), so an asset still backed by iCloud is read **synchronously and un-awaited** at that point rather than being told to fetch; and the two `AudioFile` initialisers disagree about the title — `:21` strips the extension, the decoding initialiser at `:30` keeps the full `fileName` — which is [C8](#c8-the-two-audiofiletitle-fallbacks-disagree).
+**The album feature is unchanged, deliberately.** An album *looks* like the thing audio metadata gives you, so a user reading the grid may reasonably expect the album's `artist` to be the real one from the files' tags. It is still a string the user typed into an alert. `Playlist` gained no metadata-derived fields, and `isAlbum` membership is still the order songs were added. Albums remain manual curation layered on a library that can now read its files — not a view onto the tags. Folding real album grouping in means deriving membership from the tag data, which is a separate decision about what a user-constructed album is allowed to become.
 
-**Fix:** read `AVURLAsset.commonMetadata` (or `load(.commonMetadata)`) during import and extend `AudioFile` with artist/album/genre/track/year, adding a `CodingKeys` enum and `init(from:)` that uses `decodeIfPresent` with defaults for every added field. Migrate existing entries on next launch. Surface artist under the title, and let search match artist and album as well as title. Extract embedded artwork into the existing `artworkImageName` path rather than inventing a second one.
+**Known limit.** `AVFoundation` surfaces only the *number* half of an iTunes m4a's `trkn` and `disk` atoms; the total lives inside the atom's bytes, which it does not expose. `trackTotal` and `discTotal` are therefore `nil` for m4a, and `nil` for a bare `3` in any format. They are not guessed. Getting them would mean hand-parsing the `ilst` atom, which is the kind of private-format parsing this codebase does not do elsewhere.
+
+**Verified.** A harness compiled from the real `AudioMetadata` sources passes 39 assertions over six files: a fully tagged MP3 (all ten frames), an MP3 with a title only, an MP3 whose artist and album artist are padding, an MP3 with no tags, an **iTunes-tagged m4a** written by `AVAssetExportSession`, an untagged m4a, and a path that does not exist. A second harness, compiled from the real pipeline, store and schema sources, imports a tagged m4a *both* named and with its extension stripped and asserts every field lands in SQLite and reaches the `AudioFile` the Songs tab renders, that embedded art is written and named, and that an untagged file keeps `nil` rather than a zero or an empty string. A third confirms the v1 → v2 migration against a database built by the previous build's own statements.
 
 **Exploration notes.**
-- **Ruled out:** "the metadata is there but the UI does not show it." The model has no fields for it, so this is not a view-layer omission.
-- **Ruled out:** "artwork comes from embedded tags." It does not — `ArtworkService` only ever receives images pushed from the UI, and the import path never touches `commonMetadata`.
-- **Ruled out:** "the `AVAsset` call is already doing it." `AudioImportService.swift:56` awaits exactly one key path, `.duration`.
-- **To confirm:** drop a tagged M4A with a non-matching filename tag into the picker. Title, duration, and artwork should all come from the filename and from a manual set, proving nothing is read.
-- **Ordering hazard:** adding fields to `AudioFile` *without* a custom decoder is the exact trigger for [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see) wiping the library. Fix C12 first, or land the two changes together.
-- **Confirmed by the album work:** this hazard is not theoretical. Adding `isAlbum` / `coverIsManual` / `artist` to `Playlist` would have triggered [C1](#c1-master-playlist-recovery-destroys-every-user-playlist) — deleting every user playlist and album on next launch — and was only safe because `Playlist` was given a hand-written `init(from:)` with `decodeIfPresent` defaults ([08 §2.2](08-playlists-and-library.md#22-playlist)). **`AudioFile` still has no such decoder.** Whoever implements the fix above has to write one, and the same regression test should cover both types.
-- **Suggested test:** import a tagged M4A whose ID3 artist/album differ from the filename, and assert both currently come out as nothing. Then, post-fix, assert they survive a relaunch — that second half is the part that is dangerous.
+- **Ruled out:** "the metadata is there but the UI does not show it." The model had no fields for it, so this was never a view-layer omission.
+- **Confirmed, and it was worse than the entry assumed:** `commonMetadata` is not enough even once you are reading. It returns only items AVFoundation can map onto a standard key — **5 of 10 frames** on a tagged MP3, silently dropping `TPE2`, `TYER`, `TRCK`, `TPOS` and `COMM`. `\.metadata` returns all ten.
+- **Trap:** matching tags by identifier is not portable. The same field arrives as `TCON` from a plain ID3 MP3, as `GENRE` from a Vorbis comment, and as `itsk/%A9gen` from an m4a written by Apple's own tagger — **m4a being the commonest format in this library**. Matching only ID3 names silently drops genre, year, track number, disc number and comment from every iTunes-written file, while still showing a plausible title and artist. `Field.names` lists every spelling per field, and `rawKeys` strips Apple's `%A9` escape for the leading `©`.
+- **Trap:** `AVMetadataItem` vends values lazily, and its synchronous accessors block the calling thread. The reader loads `stringValue` / `numberValue` / `dataValue` explicitly, and independently, so one unreadable frame costs that frame rather than the file's tags.
+- **Confirmed by the album work:** the [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see) hazard was not theoretical. `Playlist` had already needed a hand-written `init(from:)` with `decodeIfPresent` defaults to survive an `isAlbum` addition; `AudioFile` got the same treatment in the same commit as the metadata.
+- **Non-goal:** re-reading tags on every launch would open every file in the library, every time. Hence `tags_read` — a file with no tags at all is stamped too, so it is not re-opened forever.
 
 ---
 
@@ -1305,7 +1311,7 @@ Switching to `.Artwork` does not detach the tap, stop the 60 Hz timer, or free t
 13. [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) — pick one advance mechanism, clear `onPlaybackFinished` on stop
 14. [B4](#b4-multi-file-import-silently-takes-the-first-file) · [B5](#b5-import-errors-are-completely-invisible) · [B9](#b9-playlist-detail-share-hands-out-the-live-file)
 15. [F1](#f1-appearancemode-never-reaches-the-swiftui-environment) · [F3](#f3-water-tunnel-and-smoke-are-mutually-exclusive-by-construction)
-16. [D14](#d14-no-metadata-is-read-anywhere-the-title-is-the-filename) — **only after C12 lands**, or the schema change will trigger the library wipe
+16. ~~[D14](#d14-no-metadata-is-read-anywhere-the-title-is-the-filename)~~ — **done.** Shipped after C12, in the same change as the `AudioFile` decoder that C12 made possible.
 
 **Phase 5 — correctness and cost.**
 
