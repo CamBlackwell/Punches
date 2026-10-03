@@ -81,24 +81,37 @@ struct SpectrumView: View {
 
 // Your original grid logic, optimized for SwiftUI
 struct FrequencyGridOverlay: View {
-    let freqs: [(String, Float)] = [("100", 100), ("1k", 1000), ("5k", 5000), ("10k", 10000)]
-    
+    /// Swift has no key-path support for tuple elements, so the grid lines are
+    /// a proper `Identifiable` type rather than `[(String, Float)]`.
+    struct GridLine: Identifiable {
+        let label: String
+        let hz: Float
+        var id: Float { hz }
+    }
+
+    let freqs: [GridLine] = [
+        GridLine(label: "100", hz: 100),
+        GridLine(label: "1k", hz: 1000),
+        GridLine(label: "5k", hz: 5000),
+        GridLine(label: "10k", hz: 10000),
+    ]
+
     var body: some View {
         GeometryReader { geo in
-            ForEach(freqs, id: \.1) { (label, freq) in
+            ForEach(freqs) { line in
                 // Calculate position (Logarithmic)
-                let xPercent = log10(freq / 20.0) / log10(20000.0 / 20.0)
+                let xPercent = log10(line.hz / 20.0) / log10(20000.0 / 20.0)
                 let xPos = CGFloat(xPercent) * geo.size.width
-                
+
                 // Draw Line
                 Path { path in
                     path.move(to: CGPoint(x: xPos, y: 0))
                     path.addLine(to: CGPoint(x: xPos, y: geo.size.height))
                 }
                 .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                
+
                 // Draw Label
-                Text(label)
+                Text(line.label)
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.5))
                     .position(x: xPos + 10, y: geo.size.height - 10)

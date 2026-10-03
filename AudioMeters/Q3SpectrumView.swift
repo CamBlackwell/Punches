@@ -470,9 +470,25 @@ private struct Q3AxisLabels: View {
 
   let size: CGSize
 
-  private let frequencyMarkers: [(label: String, hz: Float)] = [
-    ("20", 20), ("50", 50), ("100", 100), ("200", 200), ("500", 500),
-    ("1k", 1_000), ("2k", 2_000), ("5k", 5_000), ("10k", 10_000), ("20k", 20_000),
+  /// Swift has no key-path support for tuple elements (`\.hz` on a tuple does
+  /// not compile), so these markers are a proper `Identifiable` type instead.
+  private struct FrequencyMarker: Identifiable {
+    let label: String
+    let hz: Float
+    var id: Float { hz }
+  }
+
+  private let frequencyMarkers: [FrequencyMarker] = [
+    FrequencyMarker(label: "20", hz: 20),
+    FrequencyMarker(label: "50", hz: 50),
+    FrequencyMarker(label: "100", hz: 100),
+    FrequencyMarker(label: "200", hz: 200),
+    FrequencyMarker(label: "500", hz: 500),
+    FrequencyMarker(label: "1k", hz: 1_000),
+    FrequencyMarker(label: "2k", hz: 2_000),
+    FrequencyMarker(label: "5k", hz: 5_000),
+    FrequencyMarker(label: "10k", hz: 10_000),
+    FrequencyMarker(label: "20k", hz: 20_000),
   ]
 
   private let dBMarkers: [Float] = [0, -10, -20, -30, -40, -50, -60, -70, -80]
@@ -490,7 +506,7 @@ private struct Q3AxisLabels: View {
   var body: some View {
     ZStack {
       // Frequency labels — bottom edge
-      ForEach(frequencyMarkers, id: \.hz) { marker in
+      ForEach(frequencyMarkers) { marker in
         Text(marker.label)
           .font(.system(size: 7.5, weight: .medium, design: .monospaced))
           .foregroundColor(.white.opacity(0.28))

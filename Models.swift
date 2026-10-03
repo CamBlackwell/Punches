@@ -12,13 +12,19 @@ struct AudioFile: Identifiable, Codable {
         AudioManager.fileDirectory.appendingPathComponent(fileName)
     }
     
+    /// The extension-free name. Both initialisers and the decoder use this, so a
+    /// track's displayed title no longer depends on which code path created it.
+    private static func title(from fileName: String) -> String {
+        (fileName as NSString).deletingPathExtension
+    }
+    
     init(fileName: String, audioDuration: Float, artworkImageName: String? = nil) {
         self.id = UUID()
         self.fileName = fileName
         self.dateAdded = Date()
         self.audioDuration = audioDuration
         self.artworkImageName = artworkImageName
-        self.title = (fileName as NSString).deletingPathExtension
+        self.title = Self.title(from: fileName)
     }
     
     init(id: UUID, fileName: String, dateAdded: Date, audioDuration: Float, artworkImageName: String? = nil, title: String? = nil) {
@@ -27,7 +33,30 @@ struct AudioFile: Identifiable, Codable {
         self.dateAdded = dateAdded
         self.audioDuration = audioDuration
         self.artworkImageName = artworkImageName
-        self.title = title ?? fileName
+        self.title = title ?? Self.title(from: fileName)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, fileName, dateAdded, audioDuration, artworkImageName, title
+    }
+
+    /// Decoded field by field, with a default for every key that may be absent.
+    ///
+    /// The library index is no longer stored as JSON — `LibraryStore` keeps one
+    /// row per track — but the old blobs are still read during migration, and a
+    /// synthesized decoder turns any added or retyped key into a total decode
+    /// failure. See `Playlist.init(from:)` for the incident that motivated this.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let fileName = try container.decode(String.self, forKey: .fileName)
+
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.fileName = fileName
+        dateAdded = try container.decodeIfPresent(Date.self, forKey: .dateAdded) ?? Date()
+        audioDuration = try container.decodeIfPresent(Float.self, forKey: .audioDuration) ?? 0
+        artworkImageName = try container.decodeIfPresent(String.self, forKey: .artworkImageName)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+            ?? Self.title(from: fileName)
     }
 }
 
@@ -53,6 +82,32 @@ struct Playlist: Identifiable, Codable {
         self.artworkImageName = artworkImageName
         self.isAlbum = isAlbum
         self.coverIsManual = artworkImageName != nil
+        self.artist = artist
+    }
+
+    /// Full designated initialiser, preserving identity and membership.
+    ///
+    /// Declaring the initialisers above suppresses Swift's synthesised memberwise
+    /// one, so loading a playlist back out of the store — which must round-trip
+    /// `id`, `dateAdded` and the ordered membership exactly — needs this spelled
+    /// out.
+    init(
+        id: UUID,
+        name: String,
+        audioFileIDs: [UUID],
+        dateAdded: Date,
+        artworkImageName: String?,
+        isAlbum: Bool,
+        coverIsManual: Bool,
+        artist: String?
+    ) {
+        self.id = id
+        self.name = name
+        self.audioFileIDs = audioFileIDs
+        self.dateAdded = dateAdded
+        self.artworkImageName = artworkImageName
+        self.isAlbum = isAlbum
+        self.coverIsManual = coverIsManual
         self.artist = artist
     }
 

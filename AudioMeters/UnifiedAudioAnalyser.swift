@@ -731,10 +731,12 @@ class UnifiedAudioAnalyser: ObservableObject {
     }
 
     DispatchQueue.main.async {
-      self.leftSamples = (self.leftSamples + newLeft).suffix(self.maxStereoPoints)
-      self.rightSamples = (self.rightSamples + newRight).suffix(self.maxStereoPoints)
-      self.midSamples = (self.midSamples + newMid).suffix(self.maxStereoPoints)
-      self.sideSamples = (self.sideSamples + newSide).suffix(self.maxStereoPoints)
+      // `suffix` returns an ArraySlice; these properties are `[Float]`, so the
+      // slice has to be materialised before it can be assigned.
+      self.leftSamples = Array((self.leftSamples + newLeft).suffix(self.maxStereoPoints))
+      self.rightSamples = Array((self.rightSamples + newRight).suffix(self.maxStereoPoints))
+      self.midSamples = Array((self.midSamples + newMid).suffix(self.maxStereoPoints))
+      self.sideSamples = Array((self.sideSamples + newSide).suffix(self.maxStereoPoints))
       self.phaseCorrelation = correlation
     }
   }

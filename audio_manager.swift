@@ -19,8 +19,24 @@ class AudioManager: NSObject, ObservableObject {
     @Published var visualisationMode: VisualisationMode = .Goniometer
     @Published var playingFromSongsTab: Bool = false
     @Published var displayedSongs: [AudioFile] = []
+    /// Retained for API compatibility. Prefer `importProgress`, which counts
+    /// rather than latching — the old flag was cleared by the *first* of N
+    /// concurrent imports to finish.
     @Published var isImporting: Bool = false
+    /// Retained for API compatibility; derived from `lastImportReport`. No view
+    /// in the project ever read this, which is why import failures were
+    /// indistinguishable from files that were never added.
     @Published var importError: String?
+    /// Live import activity. Authoritative replacement for `isImporting`.
+    @Published var importProgress = ImportProgress()
+    /// The outcome of the most recent batch, successes and per-file failures.
+    @Published var lastImportReport: ImportReport?
+    /// Set once, when a batch finishes with failures, to drive the report sheet.
+    ///
+    /// Separate from `lastImportReport` because that one is appended to on every
+    /// file; presenting directly off it would make the sheet appear and
+    /// disappear as the count crossed zero.
+    @Published var importReportToPresent: ImportReport?
 
     var currentEngine: AudioEngineProtocol?
     var timer: Timer?
@@ -51,15 +67,26 @@ class AudioManager: NSObject, ObservableObject {
     lazy var playbackService = AudioPlaybackService(manager: self)
     lazy var diagnosticsService = DiagnosticsService(manager: self)
 
-    static let fileDirectory: URL = {
-        if let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: SharedConstants.appGroupIdentifier) {
-            let dir = groupURL.appendingPathComponent("AudioFiles", isDirectory: true)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            return dir
-        } else {
-            return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        }
-    }()
+    /// The resolved on-disk layout. Group container when the entitlement is
+    /// present, `Documents/Punches` otherwise.
+    let libraryEnvironment = LibraryEnvironment.shared
+    /// The durable library index. `nil` only if the database could not be
+    /// opened, which the UI surfaces as "no library available" rather than
+    /// silently operating on an empty library.
+    var libraryStore: LibraryStore? { libraryEnvironment.store }
+    /// Move-only reconciliation. Never deletes on its own.
+    var libraryReconciler: LibraryReconciler? { libraryEnvironment.reconciler }
+    /// The journalled import pipeline. All imports funnel through this.
+    lazy var importPipeline = LibraryImportPipeline(manager: self, environment: libraryEnvironment)
+
+    /// The canonical library directory.
+    ///
+    /// Was a `static let` that created `<group>/AudioFiles` if the entitlement
+    /// existed and otherwise the *Documents root*. That fallback put audio
+    /// beside the app's own documents, which `cleanupOrphanedFiles` then walked
+    /// and deleted from — the app could destroy user files. The root is now
+    /// always a directory this app owns.
+    static let fileDirectory: URL = LibraryEnvironment.shared.tracks
 
     var sortedAudioFiles: [AudioFile] {
         playlistService.sortedAudioFiles
@@ -74,24 +101,23 @@ class AudioManager: NSObject, ObservableObject {
     }
 
     override init() {
-        self.artworkDirectory = AudioManager.fileDirectory.appendingPathComponent("Artwork", isDirectory: true)
+        self.artworkDirectory = libraryEnvironment.artwork
         super.init()
 
         try? FileManager.default.createDirectory(at: artworkDirectory, withIntermediateDirectories: true)
 
-        
+        // Synchronous load, as before, so the first frame is not empty. The
+        // startup work below may re-load if it recovers anything.
         libraryService.loadAudioFiles()
         playlistService.loadPlaylists()
         playlistService.loadOrCreateMasterPlaylist()
 
-        Task { [weak self] in
-            guard let self else { return }
-            await self.importService.processPendingImports()
-            self.libraryService.cleanupOrphanedFiles()
-        }
-
         self.displayedSongs = self.sortedAudioFiles
         self.playbackQueue = self.sortedAudioFiles
+
+        Task { [weak self] in
+            await self?.prepareLibrary()
+        }
 
         engineService.loadSelectedAlgorithm()
         libraryService.loadVisualisationMode()
@@ -101,12 +127,49 @@ class AudioManager: NSObject, ObservableObject {
         sessionService.setupInterruptionObserver()
         sessionService.setupRouteChangeObserver()
         sessionService.setupLifecycleObservers()
-        
-        
+    }
 
-        print(FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: SharedConstants.appGroupIdentifier
-        ) ?? "Failed to access AppGroup")
+    /// Startup work that cannot block the first frame.
+    ///
+    /// Ordering is load-bearing: recover before reconcile. The reconciler
+    /// classifies anything it does not recognise as reclaimable, so reconciling
+    /// first would move exactly the files the migration was meant to rescue into
+    /// Trash. The grace period would have saved most of them, but "most" is not a
+    /// recovery strategy.
+    private func prepareLibrary() async {
+        guard let store = libraryStore else {
+            LibraryEnvironment.log.fault("No library store; running without persistence")
+            return
+        }
+
+        if let environment = libraryEnvironment {
+            let summary = await LibraryMigration(
+                environment: environment,
+                store: store,
+                defaults: .standard
+            ).runIfNeeded()
+
+            if summary.adoptedFromDisk > 0 || summary.recoveredFromIndex > 0 {
+                await MainActor.run {
+                    self.libraryService.loadAudioFiles()
+                    self.playlistService.loadPlaylists()
+                    self.playlistService.loadOrCreateMasterPlaylist()
+                }
+            }
+        }
+
+        let report = await importPipeline.resumeInterruptedWork()
+        if !report.succeeded.isEmpty || !report.failed.isEmpty {
+            await MainActor.run { self.lastImportReport = report }
+        }
+
+        libraryReconciler?.reconcile()
+
+        await MainActor.run {
+            self.displayedSongs = self.sortedAudioFiles
+            self.playbackQueue = self.sortedAudioFiles
+            self.isImporting = self.importProgress.isRunning
+        }
     }
 
     deinit {
@@ -126,6 +189,42 @@ class AudioManager: NSObject, ObservableObject {
 
     func changeAlgorithm(to algorithm: PitchAlgorithm) {
         engineService.changeAlgorithm(to: algorithm)
+    }
+
+    /// Starts a fresh import batch, if one is not already running.
+    ///
+    /// The document picker calls `importAudioFile` once per selected URL in a
+    /// tight loop, so this arrives repeatedly for what is really one batch.
+    /// Resetting unconditionally would therefore wipe the progress count and the
+    /// results of the files already queued. The pipeline increments `active`
+    /// *synchronously* on the first call, so the guard is accurate from the very
+    /// first URL and the rest of the loop is correctly recognised as continuing
+    /// the same batch.
+    func beginImport() {
+        importError = nil
+        guard importProgress.active == 0 else { return }
+        lastImportReport = nil
+        importReportToPresent = nil
+        importProgress = ImportProgress()
+    }
+
+    /// Called as each import finishes. Resets progress and offers the report
+    /// once the last one lands.
+    ///
+    /// Imports are serialised by the pipeline's tail, so `active` reaching zero
+    /// genuinely means the batch is over rather than two files finishing at once.
+    func finishOneImport() {
+        importProgress.active = max(0, importProgress.active - 1)
+        isImporting = importProgress.isRunning
+
+        guard importProgress.active == 0 else { return }
+
+        if let report = lastImportReport, report.hasFailures {
+            importReportToPresent = report
+        }
+
+        importProgress = ImportProgress()
+        isImporting = false
     }
 
     func importAudioFile(from url: URL) {

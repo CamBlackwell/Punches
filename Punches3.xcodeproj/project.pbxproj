@@ -59,13 +59,6 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		CB7BBD6D2F7650E30051E29E /* Exceptions for "AudioEngines" folder in "Punches3" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				AppleAudioEngine.swift,
-			);
-			target = CB7BBCBB2F764F220051E29E /* Punches3 */;
-		};
 		CB7BBD6E2F7650E30051E29E /* Exceptions for "Tests" folder in "Punches3" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -82,19 +75,6 @@
 			);
 			target = CB7BBCC82F764F250051E29E /* Punches3Tests */;
 		};
-		CB7BBD702F7650E30051E29E /* Exceptions for "AudioMeters" folder in "Punches3" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				goniometerManager.swift,
-				goniometerView.swift,
-				Q3SpectrumView.swift,
-				Shaders.metal,
-				UnifiedAudioAnalyser.swift,
-				"UnifiedAudioAnalyser+Testing.swift",
-				VisualisationMode.swift,
-			);
-			target = CB7BBCBB2F764F220051E29E /* Punches3 */;
-		};
 		CB7BBD712F7650E30051E29E /* Exceptions for "AudioShare" folder in "Punches3" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -104,53 +84,16 @@
 			);
 			target = CB7BBCBB2F764F220051E29E /* Punches3 */;
 		};
-		CB7BBD722F7650E30051E29E /* Exceptions for "Services" folder in "Punches3" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				ArtworkService.swift,
-				AudioEngineService.swift,
-				AudioImportService.swift,
-				AudioLibraryService.swift,
-				AudioPlaybackService.swift,
-				AudioSessionService.swift,
-				PlaylistService.swift,
-			);
-			target = CB7BBCBB2F764F220051E29E /* Punches3 */;
-		};
-		CB7BBD732F7650E30051E29E /* Exceptions for "View" folder in "Punches3" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Album_view.swift,
-				audio_player_view.swift,
-				BlueNoise64.png,
-				ColormapWarp.metal,
-				content_view.swift,
-				Fog.metal,
-				PlaylisList_view.swift,
-				setting_View.swift,
-				ShaderEffects.swift,
-				SpectrumView.swift,
-				TunnelShader.metal,
-				Water.metal,
-			);
-			target = CB7BBCBB2F764F220051E29E /* Punches3 */;
-		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		CB7BBD342F7650E30051E29E /* AudioEngines */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				CB7BBD6D2F7650E30051E29E /* Exceptions for "AudioEngines" folder in "Punches3" target */,
-			);
 			path = AudioEngines;
 			sourceTree = "<group>";
 		};
 		CB7BBD3C2F7650E30051E29E /* AudioMeters */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				CB7BBD702F7650E30051E29E /* Exceptions for "AudioMeters" folder in "Punches3" target */,
-			);
 			path = AudioMeters;
 			sourceTree = "<group>";
 		};
@@ -164,9 +107,6 @@
 		};
 		CB7BBD4A2F7650E30051E29E /* Services */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				CB7BBD722F7650E30051E29E /* Exceptions for "Services" folder in "Punches3" target */,
-			);
 			path = Services;
 			sourceTree = "<group>";
 		};
@@ -181,9 +121,6 @@
 		};
 		CB7BBD532F7650E30051E29E /* View */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				CB7BBD732F7650E30051E29E /* Exceptions for "View" folder in "Punches3" target */,
-			);
 			path = View;
 			sourceTree = "<group>";
 		};
@@ -268,6 +205,10 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
+				CB7BBD342F7650E30051E29E /* AudioEngines */,
+				CB7BBD3C2F7650E30051E29E /* AudioMeters */,
+				CB7BBD4A2F7650E30051E29E /* Services */,
+				CB7BBD532F7650E30051E29E /* View */,
 				CB7BBD4D2F7650E30051E29E /* Tests */,
 			);
 			name = Punches3;

@@ -66,52 +66,93 @@ final class PlaylistService {
             ?? album.artworkImageName
     }
 
+    // MARK: - Persistence
+
+    /// Persists playlists and their membership in one transaction.
+    ///
+    /// Previously this and `saveAudioFiles()` were two independent
+    /// `UserDefaults` writes from two call sites, so a track row and the
+    /// membership that makes it visible could disagree. `sortedAudioFiles` reads
+    /// the master playlist, so a lost membership write is an invisible file —
+    /// indistinguishable from a lost file.
     func savePlaylists() {
+        guard let store = manager.libraryStore else { return }
+
+        let snapshot = LibrarySnapshot(
+            tracks: manager.audioFiles,
+            playlists: manager.playlists.map { PlaylistRecord($0) },
+            masterPlaylistID: manager.masterPlaylistID
+        )
+
         do {
-            let data = try JSONEncoder().encode(manager.playlists)
-            UserDefaults.standard.set(data, forKey: manager.playlistsKey)
+            try store.persist(snapshot)
         } catch {
-            print("failed to save playlists \(error.localizedDescription)")
+            LibraryEnvironment.log.fault("Failed to persist playlists: \(error.localizedDescription)")
         }
     }
 
     func loadPlaylists() {
+        if let store = manager.libraryStore {
+            manager.playlists = ((try? store.loadPlaylists()) ?? []).map(\.playlist)
+            manager.masterPlaylistID = try? store.loadMasterPlaylistID()
+            if manager.masterPlaylistID == nil,
+               let legacy = try? loadLegacyMasterID() {
+                manager.masterPlaylistID = legacy
+            }
+            return
+        }
+
         guard let data = UserDefaults.standard.data(forKey: manager.playlistsKey) else { return }
-        do {
-            manager.playlists = try JSONDecoder().decode([Playlist].self, from: data)
-        } catch {
-            print("failed to load playlists \(error.localizedDescription)")
-        }
+        let decoded = LibraryMigration.lossyDecode([Playlist].self, from: data)
+        manager.playlists = decoded.values
     }
 
-    private func clearZombiePlaylists() {
-        manager.playlists = []
-        savePlaylists()
-        UserDefaults.standard.removeObject(forKey: manager.masterPlaylistKey)
+    private func loadLegacyMasterID() throws -> UUID? {
+        let data = UserDefaults.standard.data(forKey: manager.masterPlaylistKey) ?? return nil
+        return try JSONDecoder().decode(UUID.self, from: data)
     }
 
+    /// Ensures a master playlist exists and contains every track.
+    ///
+    /// ## Why this no longer clears anything
+    ///
+    /// The old version called `clearZombiePlaylists()`, which emptied
+    /// `manager.playlists` and removed the master id from `UserDefaults`. That
+    /// ran whenever the stored master id failed to resolve — including on a
+    /// decode failure, which `savePlaylists()` could trigger for reasons
+    /// unrelated to the master at all. The user's playlists were then rebuilt as
+    /// empty shells and the next `savePlaylists()` overwrote the old blob,
+    /// permanently.
+    ///
+    /// A missing master is a one-row problem, so it is now repaired as one: a
+    /// fresh master id, the existing playlists untouched, and full membership
+    /// re-derived from the track table.
     func loadOrCreateMasterPlaylist() {
-        if let data = UserDefaults.standard.data(forKey: manager.masterPlaylistKey),
-           let id = try? JSONDecoder().decode(UUID.self, from: data),
-           manager.playlists.contains(where: { $0.id == id }) {
-            manager.masterPlaylistID = id
-        } else {
-            clearZombiePlaylists()
-            let masterPlaylist = Playlist(name: "__MASTER_SONGS__")
-            manager.masterPlaylistID = masterPlaylist.id
-            manager.playlists.append(masterPlaylist)
+        var masterID = manager.masterPlaylistID
 
-            for audioFile in manager.audioFiles {
-                if let index = manager.playlists.firstIndex(where: { $0.id == manager.masterPlaylistID }) {
-                    manager.playlists[index].audioFileIDs.append(audioFile.id)
-                }
-            }
-
-            savePlaylists()
-            if let data = try? JSONEncoder().encode(manager.masterPlaylistID) {
-                UserDefaults.standard.set(data, forKey: manager.masterPlaylistKey)
-            }
+        if masterID == nil || !manager.playlists.contains(where: { $0.id == masterID }) {
+            let fresh = Playlist(name: "__MASTER_SONGS__")
+            masterID = fresh.id
+            manager.playlists.append(fresh)
         }
+        manager.masterPlaylistID = masterID
+
+        // Self-heal membership: a track with no master row is invisible to
+        // `sortedAudioFiles`, which is the single largest cause of "the file is
+        // on disk but not in the app".
+        guard let masterID,
+              let index = manager.playlists.firstIndex(where: { $0.id == masterID }) else { return }
+
+        let expected = Set(manager.audioFiles.map(\.id))
+        let present = Set(manager.playlists[index].audioFileIDs)
+        guard present != expected else { return }
+
+        var repaired = manager.playlists[index].audioFileIDs.filter(expected.contains)
+        let additions = manager.audioFiles.filter { !present.contains($0.id) }
+        repaired.append(contentsOf: additions.map(\.id))
+        manager.playlists[index].audioFileIDs = repaired
+
+        savePlaylists()
     }
 
     func reorderSongs(from source: IndexSet, to destination: Int) {
