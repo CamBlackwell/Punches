@@ -11,6 +11,8 @@
 		CB7BBD212F764FF50051E29E /* audio_engine_protocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB7BBD202F764FF50051E29E /* audio_engine_protocol.swift */; };
 		CB7BBD232F7650000051E29E /* audio_manager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB7BBD222F7650000051E29E /* audio_manager.swift */; };
 		CB7BBD252F7650040051E29E /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB7BBD242F7650040051E29E /* Models.swift */; };
+		CB7BBD902F7650E40051E29E /* DiagnosticsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB7BBD922F7650E40051E29E /* DiagnosticsService.swift */; };
+		CB7BBD912F7650E40051E29E /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB7BBD932F7650E40051E29E /* DiagnosticsView.swift */; };
 		CB7BBD272F76500C0051E29E /* pitch_algorithm.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB7BBD262F76500C0051E29E /* pitch_algorithm.swift */; };
 		CB7BBD2B2F7650190051E29E /* SharedConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB7BBD2A2F7650190051E29E /* SharedConstants.swift */; };
 		CB7BBD2E2F7650220051E29E /* silly_speed.code-workspace in Resources */ = {isa = PBXBuildFile; fileRef = CB7BBD2D2F7650220051E29E /* silly_speed.code-workspace */; };
@@ -44,6 +46,8 @@
 		CB7BBD202F764FF50051E29E /* audio_engine_protocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = audio_engine_protocol.swift; sourceTree = "<group>"; };
 		CB7BBD222F7650000051E29E /* audio_manager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = audio_manager.swift; sourceTree = "<group>"; };
 		CB7BBD242F7650040051E29E /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		CB7BBD922F7650E40051E29E /* DiagnosticsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsService.swift; sourceTree = "<group>"; };
+		CB7BBD932F7650E40051E29E /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
 		CB7BBD262F76500C0051E29E /* pitch_algorithm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = pitch_algorithm.swift; sourceTree = "<group>"; };
 		CB7BBD2A2F7650190051E29E /* SharedConstants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedConstants.swift; sourceTree = "<group>"; };
 		CB7BBD2C2F76501D0051E29E /* silly_speed_ios.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = silly_speed_ios.entitlements; sourceTree = "<group>"; };
@@ -116,6 +120,7 @@
 		CB7BBD732F7650E30051E29E /* Exceptions for "View" folder in "Punches3" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				Album_view.swift,
 				audio_player_view.swift,
 				BlueNoise64.png,
 				ColormapWarp.metal,
@@ -216,6 +221,8 @@
 				CB94FFC02FF7779D0067D808 /* Punches3.entitlements */,
 				CBB46EA52FF291440003B212 /* Punches3-Info.plist */,
 				CB7BBCBD2F764F220051E29E /* Products */,
+				CB7BBD922F7650E40051E29E /* DiagnosticsService.swift */,
+				CB7BBD932F7650E40051E29E /* DiagnosticsView.swift */,
 				CB7BBD342F7650E30051E29E /* AudioEngines */,
 				CB7BBD3C2F7650E30051E29E /* AudioMeters */,
 				CB7BBD432F7650E30051E29E /* AudioShare */,
@@ -392,6 +399,8 @@
 			files = (
 				CB7BBD302F76502A0051E29E /* silly_speed.swift in Sources */,
 				CB7BBD252F7650040051E29E /* Models.swift in Sources */,
+				CB7BBD902F7650E40051E29E /* DiagnosticsService.swift in Sources */,
+				CB7BBD912F7650E40051E29E /* DiagnosticsView.swift in Sources */,
 				CB7BBD2B2F7650190051E29E /* SharedConstants.swift in Sources */,
 				CB7BBD212F764FF50051E29E /* audio_engine_protocol.swift in Sources */,
 				CB7BBD232F7650000051E29E /* audio_manager.swift in Sources */,

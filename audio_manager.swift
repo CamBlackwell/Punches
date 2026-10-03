@@ -33,6 +33,12 @@ class AudioManager: NSObject, ObservableObject {
     let masterPlaylistKey = "masterPlaylistID"
     var masterPlaylistID: UUID?
 
+    /// Key under which the storage location in use (App Group vs. the Documents
+    /// fallback) is recorded for `DiagnosticsService` to read back. See the note
+    /// in `DiagnosticsService.buildSnapshot`: nothing currently writes this, so
+    /// `recordedStorageMode` is expected to be `nil` until that is wired up.
+    static let storageModeKey = "storageMode"
+
     var playbackQueue: [AudioFile] = []
     var observerTokens: [Any] = []
 
@@ -43,6 +49,7 @@ class AudioManager: NSObject, ObservableObject {
     lazy var artworkService = ArtworkService(manager: self)
     lazy var importService = AudioImportService(manager: self)
     lazy var playbackService = AudioPlaybackService(manager: self)
+    lazy var diagnosticsService = DiagnosticsService(manager: self)
 
     static let fileDirectory: URL = {
         if let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: SharedConstants.appGroupIdentifier) {

@@ -32,7 +32,7 @@ Two documents change how you should read everything else:
 
 - **New to the codebase** — [01](01-getting-started-and-usage.md) → [02](02-architecture.md) → [03](03-project-structure-and-build.md), then the area you are changing.
 - **You have a bug report, not a task** — [14 · Reported symptoms](14-known-issues.md#reported-symptoms) maps a plain-language symptom to the issue entry. Start there rather than searching for code.
-- **Fixing the build** — [03 §5](03-project-structure-and-build.md#5-the-target-that-does-not-compile) → [03 §8](03-project-structure-and-build.md#8-building-and-verifying) → [14 A](14-known-issues.md#a--build--project-structure).
+- **Fixing the build** — [03 §5](03-project-structure-and-build.md#5-target-membership-and-the-trap-in-it) → [03 §8](03-project-structure-and-build.md#8-building-and-verifying) → [14 A](14-known-issues.md#a--build--project-structure).
 - **Making the app-group handoff work** — [14 A3](14-known-issues.md#a3-app-group-entitlement-is-empty) → [09 §2](09-file-import-and-sharing.md#2-sharedconstants) → [12 §3](12-persistence-and-keys.md#3-app-group-keys).
 - **Working on audio** — [04](04-audio-pipeline.md) → [05](05-signal-analysis.md) → [13](13-concurrency-and-threading.md).
 - **Working on rendering** — [05](05-signal-analysis.md) → [06](06-visualisation.md) → [07](07-meters-and-hud.md).

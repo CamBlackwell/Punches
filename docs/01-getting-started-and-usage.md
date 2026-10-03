@@ -2,7 +2,7 @@
 
 What Punches is, how to build it, and how to drive the UI. Every claim here is checked against the source; where the app does not do what it appears to, that is called out.
 
-> **The app does not currently build.** 7 of 30 Swift files are members of the `Punches3` target; every symbol outside those 7 is undefined at compile time. Nothing described here can be run until that is repaired — see [03 §5](03-project-structure-and-build.md#5-the-target-that-does-not-compile) and [14](14-known-issues.md). The usage below describes the intended behaviour of the code as written.
+> **The app builds.** 31 of the 33 Swift files in the repository are members of the `Punches3` target, and `xcodebuild … clean build` succeeds with zero errors. The two non-members are the files in `Tests/`, which belong to the (currently empty) test bundle. Membership in this project is an *inclusion* allowlist rather than Apple's documented exclusion list, so it is easy to add a file that never compiles — see [03 §5](03-project-structure-and-build.md#5-target-membership-and-the-trap-in-it) and [14 A1](14-known-issues.md#a1-target-membership-is-an-inclusion-allowlist-and-silently-swallows-files). The usage below describes the code as written; note that a missing Metal shader is a runtime blank, not a build failure, so a clean build is not evidence that every effect renders.
 
 ---
 
@@ -52,16 +52,16 @@ It is a local-files player. There is no network, no account, no sync, no streami
 
 ## 3. Building and running
 
-### 3.1 Before anything works
+### 3.1 Running the app
 
-Repair target membership. Concretely, add the `AudioEngines`, `AudioMeters`, `Services` and `View` synchronized groups to the `Punches3` target's `fileSystemSynchronizedGroups`, and clear the `membershipExceptions` lists that exclude them. The full recipe is in [03 §8.1](03-project-structure-and-build.md#81-repairing-target-membership).
+Nothing to repair — the target is complete apart from `Tests/`, and the build is green.
 
-Expect two follow-on failures that are **not** membership problems:
+Two things *are* worth checking before trusting what you see on screen, because neither is a compile error:
 
 1. `ShaderLibrary.grainOverlay` does not exist in any `.metal` file ([10 §4](10-theming-and-shaders.md#4-the-four-shader-effects)).
-2. `tunnelEffect` is called with 8 arguments for 7 parameters (same section).
+2. `tunnelEffect` is called with 8 arguments for 9 parameters (same section).
 
-Both are in `View/TunnelShader.metal` and `View/ShaderEffects.swift` and must be fixed or stubbed before the target builds.
+`ShaderLibrary` resolves members dynamically from `default.metallib` at runtime, so both of these compile cleanly and fail silently — a blank tunnel, and a Grain slider wired to a function that does not exist. If the tunnel renders nothing, this is why; it is not a build problem.
 
 ### 3.2 Commands
 
@@ -331,7 +331,7 @@ The renderer keeps a peak-hold envelope per band with a release-time decay compu
 | If you want to… | Read |
 |---|---|
 | Understand the layers | [02](02-architecture.md) |
-| Fix the build | [03 §5](03-project-structure-and-build.md#5-the-target-that-does-not-compile), [14](14-known-issues.md) |
+| Fix the build | [03 §5](03-project-structure-and-build.md#5-target-membership-and-the-trap-in-it), [14](14-known-issues.md) |
 | Understand the audio graph | [04](04-audio-pipeline.md) |
 | Understand the DSP | [05](05-signal-analysis.md) |
 | Understand the Metal renderers | [06](06-visualisation.md) |

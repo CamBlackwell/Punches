@@ -155,7 +155,7 @@ So with Low Power Mode on, the segmented picker **still displays the user's stor
 
 ### 5.3 Tunnel Grain
 
-The Grain slider (`:1463`) is bound to `theme.tunnelGrainStrength` and feeds `ShaderLibrary.grainOverlay` — **a function that does not exist in any `.metal` file in the repository.** The control is fully wired and the shader is missing; see [10](10-theming-and-shaders.md#4-the-four-shader-effects) and [14-known-issues.md](14-known-issues.md).
+The Grain slider (`:1463`) is bound to `theme.tunnelGrainStrength` and feeds `ShaderLibrary.grainOverlay` — **a function that does not exist in any `.metal` file in the repository.** Because `ShaderLibrary` resolves members dynamically, this is a runtime no-op, not a build failure: the control is fully wired and the shader is missing. See [10](10-theming-and-shaders.md#4-the-four-shader-effects) and [14-known-issues.md](14-known-issues.md).
 
 ### 5.4 Shader attribution
 
@@ -230,7 +230,7 @@ Worth listing explicitly, because their absence is easy to mistake for an oversi
 | Severity | Issue | Where |
 |---|---|---|
 | High | `appearanceMode` is never applied via `preferredColorScheme`; system controls keep the device appearance | §4.2 |
-| High | `ShaderLibrary.grainOverlay` undefined, so the tunnel does not compile — the Grain slider is dead | §5.3 |
+| High | `ShaderLibrary.grainOverlay` undefined, so the tunnel has no grain — the Grain slider is dead | §5.3 |
 | High | Water / tunnel / smoke are full-replacement backdrops; enabling two shows only one, with no warning | §7 |
 | Medium | Low Power Mode override is invisible; the picker shows the stored tier, not the effective one | §5.2 |
 | Medium | Water section subtitle says "Uses the current background colour"; the shader uses the fixed `waterColor` | §7 |

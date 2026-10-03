@@ -46,25 +46,28 @@ User-reported symptoms and the entries that explain them. A single report can ha
 
 ## A — Build & Project Structure
 
-### A1 The target compiles 7 of 30 Swift files
+### A1 Target membership is an inclusion allowlist, and silently swallows files
 
 **Critical.**
 
-`Punches3`'s Sources phase contains exactly seven entries (`Punches3.xcodeproj/project.pbxproj:392-399`): `silly_speed.swift`, `audio_manager.swift`, `audio_engine_protocol.swift`, `pitch_algorithm.swift`, `Models.swift`, `SharedConstants.swift`, `AudioHealthHUD.swift`.
+`Punches3`'s Sources phase lists nine root-level files explicitly (`project.pbxproj:396-409`). It does **not** list the other 22 Swift files that compile — those arrive through five `PBXFileSystemSynchronizedRootGroup` groups.
 
-Every other file is excluded. Each synchronized root group carries a `PBXFileSystemSynchronizedBuildFileExceptionSet` whose `membershipExceptions` lists the whole folder — `AudioMeters` all 7 (`:81-93`), `Services` all 7 (`:103-115`), `View` all 11 (`:116-132`), `AudioEngines` (`:58-64`), `AudioShare` (`:94-102`) — and those five groups are **not in the target's `fileSystemSynchronizedGroups` at all** (`:263-265` lists only `Tests`, whose own exceptions exclude both test files).
+The mechanism is the trap. Apple's documented semantics for `PBXFileSystemSynchronizedBuildFileExceptionSet.membershipExceptions` is that it lists files **excluded** from the target. **In this project it behaves as an inclusion allowlist**: a file compiles if and only if it is named in that folder's list. Verified against `Punches3.SwiftFileList`, which is the ground truth — not the Sources phase, which prior revisions of this document wrongly treated as complete.
 
-`silly_speed.swift` instantiates `ContentView`, `AudioManager` and `ThemeManager`; `audio_manager.swift` instantiates seven services. The build fails immediately with `cannot find '<Type>' in scope`, dozens of times.
+**This has already swallowed two features silently.** `View/Album_view.swift` (692 lines) was added by commit `775bea1`, which touched no project file at all, so it never compiled; the only symptom was two `cannot find 'AlbumsListView'/'EmptyAlbumView' in scope` errors at `View/content_view.swift:211` and `:217`. `DiagnosticsService.swift` and `DiagnosticsView.swift` were then missed the same way, because no synchronized group covers the repository root (§5.4 of [03](03-project-structure-and-build.md)) and they had no root-level `PBXBuildFile`.
 
-**Now 31 Swift files, and it is getting worse with each feature.** `View/Album_view.swift` was added for the album feature and is not in the target either, so it is invisible to any build — including the developer's, unless they add it in Xcode. **A new file is not automatically a new compile error; it is a new file that is never checked.** Fix [A1](#a1-the-target-compiles-7-of-30-swift-files) before adding further files, or every subsequent feature is being written blind.
+**Fixed.** `Album_view.swift` added to the `View` allowlist; both diagnostics files given `PBXFileReference` + `PBXBuildFile` + Sources entries. The build now succeeds from clean with zero errors.
 
-**Fix:** add the four folders to `Punches3`'s `fileSystemSynchronizedGroups` and delete the four exception sets. See [03 §8.1](03-project-structure-and-build.md#81-repairing-target-membership). Expect [G1](#g1-missing-grainoverlay-shader-and-bluenoise64-asset) and [E2](#e2-rt-closure-calls-a-main-actor-method) to surface immediately afterwards — they are latent *because* of this bug.
+**Fix (if it recurs):** for a file inside a synchronized folder, add its name to that folder's `membershipExceptions` — one line, no other edit. For a root-level file, add the three entries. Never delete the exception sets to "fix" this; see below.
+
+> 🚫 **Do not delete the exception sets or add the groups to `fileSystemSynchronizedGroups` to convert the lists into exclusion sets.** That is the remedy implied by Apple's documented semantics and it was previously recommended in this suite. In this tree it would remove the 24 files that currently compile.
 
 **Exploration notes.**
-- **Ruled out:** "the files are excluded by a build setting." They are excluded structurally. The four synchronized root groups are not in `fileSystemSynchronizedGroups` at all, and a `membershipExceptions` set on a group that is not attached to a target has no effect. No build setting controls this.
-- **Ruled out:** "a source-generation phase adds them." There is no script or generated-source phase in the target.
-- **To confirm:** the Sources phase (`project.pbxproj:388-402`) is the ground truth. Alternatively, build and read the `CompileSwift` lines in the log — they list exactly the files that reached the compiler.
-- **Expect this to raise the error count.** Repairing membership surfaces [A4](#a4-grainoverlay-is-undefined-and-tunneleffect-is-mis-called) and [F2](#f2-the-tunnel-effect-does-not-compile) as hard compile errors, and [E2](#e2-rt-closure-calls-a-main-actor-method) as an actor-isolation error. A build with *more* errors afterwards is progress, not regression.
+- **Ruled out:** "the Sources phase is the whole list." It is 9 of 31.
+- **Ruled out:** "`fileSystemSynchronizedGroups` tells you membership." It lists only `Tests`, yet the other five groups demonstrably contribute files. The exception sets' `target` field is what binds a group here.
+- **Ruled out:** "a source-generation phase adds them." There is no script or generated-source phase.
+- **To confirm:** read `Punches3.build/Debug-iphoneos/…/Punches3.SwiftFileList`, or build and read the `SwiftCompile` lines. Do not use the Sources phase.
+- **A small error count is the symptom, not reassurance.** `Album_view.swift` was 692 lines of unchecked code and produced exactly two errors. Always verify membership after adding a file.
 
 ### A2 Both test targets are empty
 
@@ -94,18 +97,22 @@ Every other file is excluded. Each synchronized root group carries a `PBXFileSys
 - **To confirm:** the app already prints the container URL at launch (`audio_manager.swift:104-106`). Compare its output with the group identifier declared in the two unreferenced entitlement files — a `nil` there is the confirmation.
 - **Ordering:** this is a prerequisite for [B1](14-known-issues.md#b1-app-group-entitlement-is-empty), [B2](#b2-no-share-extension-target-exists) and the whole of section B. Fix it before testing any of them, or you will be debugging a path that cannot possibly succeed.
 
-### A4 `grainOverlay` is undefined and `tunnelEffect` is mis-called
+### A4 `grainOverlay` is missing and `tunnelEffect` is mis-called
 
 **Critical.**
 
-See [G1](#g1-missing-grainoverlay-shader-and-bluenoise64-asset). Blocking the build independently of A1.
+See [G1](#g1-missing-grainoverlay-shader-and-bluenoise64-asset). **Neither half is a compile error**, contrary to earlier revisions of this entry.
+
+`ShaderLibrary` is `SwiftUI`'s own type, and it exposes `subscript(dynamicMember: String) -> ShaderFunction`. `ShaderLibrary.grainOverlay(.image(…), .float(…))` therefore resolves through a string-keyed subscript to an opaque `ShaderFunction` that is invoked via `dynamicallyCall(withArguments:)`. The compiler never checks the name against the `.metal` files and never checks the argument list against the Metal signature — confirmed by the symbol `_$s7SwiftUI13ShaderLibraryV13dynamicMemberAA0C8FunctionVSS_tcigZ` in the built object file, and by the build succeeding with both call sites present.
+
+So both defects are **runtime** failures: the tunnel renders blank and the Grain slider drives nothing.
 
 **Exploration notes.**
-- **Ruled out:** "`grainOverlay` is defined in a `.metal` file that is not in the target." It is not defined anywhere — zero matches across every `.metal` file in the repository, not merely unlinked ones.
-- **Ruled out:** "AudioKit provides the function." `ShaderLibrary` resolves to the app's own stitchable namespace, and the AudioKit dependency is vestigial (see [G5](#g5-audiokit-dependency-is-vestigial)).
-- **Ruled out:** "the call site is dead code so it never compiles." It is on the live tunnel path, which is reachable from Settings.
-- **To confirm:** this is a compiler error, not a runtime blank, so it needs no runtime instrumentation — build and read the diagnostic. Fix order matters: **remove the call to unblock the build, then add the shader separately.** Adding a Metal function is a bigger change than deleting a call, and mixing them makes the build unbisectable.
-- **The second half is a runtime nil, not a compile error.** `Image("BlueNoise64")` compiles and silently returns nothing. See [G1](#g1-missing-grainoverlay-shader-and-bluenoise64-asset).
+- **Ruled out:** "`grainOverlay` is defined in a `.metal` file that is not in the target." It is not defined anywhere — zero matches across every `.metal` file in the repository.
+- **Ruled out:** "AudioKit provides the function." `ShaderLibrary` is SwiftUI's, and the AudioKit dependency is vestigial (see [G5](#g5-audiokit-dependency-is-vestigial)).
+- **Ruled out:** "the call site is dead code so it never compiles." Irrelevant — nothing here is a compile-time check. It is on the live tunnel path, reachable from Settings.
+- **To confirm:** read the undefined symbol `ShaderLibrary.subscript(dynamicMember:)` out of `ShaderEffects.o` with `nm`, or simply note that the build is green. The failure is only observable by running the app.
+- **The second half is a runtime nil too.** `Image("BlueNoise64")` compiles and silently returns nothing — it is not in `Assets.xcassets`. See [G1](#g1-missing-grainoverlay-shader-and-bluenoise64-asset).
 
 ### A5 The RT thread allocates on a real-time queue
 
@@ -374,7 +381,7 @@ If `masterPlaylistID` becomes unreadable for any reason — decode failure, part
 
 **High — FIXED in the working tree, uncommitted.**
 
-`PlaylistService.createPlaylist` (`:118-129`) snapshots `manager.playlists` and writes it to `UserDefaults` from a `.utility` detached task. Every other mutator writes the same key synchronously from main. `UserDefaults.set` is last-writer-wins, so a create followed by any faster mutation loses the playlist. It is intermittent because `.utility` usually loses to main. The detached task also reads `self.manager.playlistsKey` off the main actor — an isolation violation, unobserved only because of [A1](#a1-the-target-compiles-7-of-30-swift-files).
+`PlaylistService.createPlaylist` (`:118-129`) snapshots `manager.playlists` and writes it to `UserDefaults` from a `.utility` detached task. Every other mutator writes the same key synchronously from main. `UserDefaults.set` is last-writer-wins, so a create followed by any faster mutation loses the playlist. It is intermittent because `.utility` usually loses to main. The detached task also reads `self.manager.playlistsKey` off the main actor — an isolation violation that, unlike [E2](#e2-rt-closure-calls-a-main-actor-method), has no compile-time consequence here.
 
 **Fix:** delete the `Task.detached` and call `savePlaylists()`. — **Done.** `createPlaylist(name:isAlbum:artist:)` is now `PlaylistService.swift:197-201`: append, `savePlaylists()`, inline. `AudioManager.createAlbum` (`:150-153`) is a plain synchronous call for the same reason. The `DispatchQueue.main.async` hop in `AudioManager.createPlaylist` (`:144-147`) is redundant but harmless, since the whole app is `@MainActor` by default ([03](03-project-structure-and-build.md)).
 
@@ -743,14 +750,18 @@ Two of the table's rows are the same defect wearing different clothes. The impor
 
 **Critical.**
 
-With `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` (`project.pbxproj:585`, `:624`), `UnifiedAudioAnalyser` **is** main-actor-isolated, yet `self?.writeToRingBuffer(buffer)` (`:343`) is invoked from the RT closure. That is an isolation violation, unobserved only because of [A1](#a1-the-target-compiles-7-of-30-swift-files). It becomes a compile error the moment membership is repaired.
+With `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` (`project.pbxproj:585`, `:624`), `UnifiedAudioAnalyser` **is** main-actor-isolated, yet `self?.writeToRingBuffer(buffer)` (`UnifiedAudioAnalyser.swift:343`) is invoked from the RT callback.
 
-**Fix:** make `RingBuffer` a non-isolated value type and the analyser's RT entry point `nonisolated`. Do this together with E1.
+**This does not produce a compile error, contrary to earlier revisions of this entry.** The closure passed to `mixer.installTap(...)` at `:339` is formed inside `installTapSafely`, which is itself implicitly `@MainActor`, so the closure inherits that isolation and the call type-checks. The build is green with this file in the target — verified.
+
+That makes the isolation **nominal rather than real**. `installTap` invokes the block on the audio render thread, but in Swift 5 language mode a call from an `@MainActor`-isolated closure to an `@MainActor` method is emitted as a direct call with no hop and no runtime assertion. So the annotation protects nothing: the work simply executes on the RT thread, which is where [E1](#e1-rt-thread-allocates-19-mbs)'s allocation cost lands. The bug is real; it is a latency and correctness problem, not a build failure.
+
+**Fix:** make `RingBuffer` a non-isolated value type and mark the analyser's RT entry point `nonisolated`, so the isolation actually reflects where the code runs. Do this together with E1.
 
 **Exploration notes.**
 - **Ruled out:** "the tap callback runs on the main queue." It runs on the audio render thread, which is the whole problem.
-- **Ruled out:** "the default `SWIFT_DEFAULT_ACTOR_ISOLATION` setting makes the hop implicit and therefore free." The hop is a real `DispatchQueue.main.async` — which is exactly why it is not RT-safe. The build setting hides the *call site* requirement, not the cost.
-- **To confirm:** this is currently latent only because [A1](#a1-the-target-compiles-7-of-30-swift-files) keeps the file out of the target. Repair membership and the compiler will name the actor violation directly. No runtime instrumentation needed.
+- **Ruled out:** "the default `SWIFT_DEFAULT_ACTOR_ISOLATION` setting makes the hop implicit and therefore free." The annotation makes the *call site* legal; it does not move the work off the RT thread.
+- **To confirm:** read `installTap`'s contract (block runs on the render thread) against the closure's inferred isolation at `:339`. No runtime instrumentation needed, and no compiler diagnostic — there is none to wait for.
 - **Trade-off to evaluate, not assume:** hopping to the main actor is safe but adds latency to the audio path. The alternative is to keep the update on the render thread and let the visualiser read a lock-protected snapshot. Both are defensible; the current code is neither.
 
 ### E3 `mach_timebase_info` on every tap callback
@@ -1076,7 +1087,7 @@ All three are `@Published`, persisted, and set by every preset — reachable **o
 
 Three defects in ~30 lines of `View/ShaderEffects.swift`:
 
-1. **`ShaderLibrary.grainOverlay` does not exist.** Called at `:209-214`; defined in **no** `.metal` file in the repository. `ShaderLibrary` only exposes `[[ stitchable ]]` functions, so this is a **compile error**, not a blank render.
+1. **`ShaderLibrary.grainOverlay` does not exist.** Called at `ShaderEffects.swift:210-214`; defined in **no** `.metal` file in the repository. **This is not a compile error** — `ShaderLibrary` resolves members through a string-keyed `dynamicMember` subscript, so the name is never checked and the shader simply fails to resolve at runtime. Expect a missing grain overlay, not a build break.
 2. **`BlueNoise64` cannot resolve.** The header comment at `:158-159` admits it "requires 'BlueNoise64' to be added to Assets.xcassets". It was never added — `Assets.xcassets/` has only `AccentColor.colorset` and `AppIcon.appiconset`. The PNG exists loose at `View/BlueNoise64.png`, but that is not sufficient: it is not in the catalogue, **and** it is in the `View` folder's `membershipExceptions` (`project.pbxproj:120`) so it is excluded from the target and never copied into the bundle.
 3. **`tunnelEffect` is mis-called.** `ShaderEffects.swift:181-191` passes **8** explicit arguments; `tunnelEffect` declares **7**. By positional binding `.float(Float(quality.foldIterations))` would be read as `qualityFolds` while `.image(...)` fails to bind. `TunnelShader.metal` has no `[[texture(n)]]` attribute anywhere — the intended `texture2d` parameter was never added.
 
@@ -1145,7 +1156,7 @@ Convention 1 is **half a band** off 2 and 3 — about a 4.5 % frequency error at
 
 **Medium.**
 
-One file in the entire repository imports it: `AudioMeters/UnifiedAudioAnalyser.swift:2`. The engine is hand-rolled `AVAudioEngine` / `AVAudioPlayerNode` / `AVAudioUnitTimePitch` (`AudioEngines/AppleAudioEngine.swift`, `Services/AudioEngineService.swift`). AudioKit pulls in `audiokitui` and `controls` behind it, and it is linked into the app's Frameworks phase (`:187-195`) even though its only consumer is excluded from the target ([A1](#a1-the-target-compiles-7-of-30-swift-files)). The root `README.md:45` says the graph is "built on `AVAudioEngine`" — correct — but implies AudioKit is central; it is not.
+One file in the entire repository imports it: `AudioMeters/UnifiedAudioAnalyser.swift:2`. The engine is hand-rolled `AVAudioEngine` / `AVAudioPlayerNode` / `AVAudioUnitTimePitch` (`AudioEngines/AppleAudioEngine.swift`, `Services/AudioEngineService.swift`). AudioKit pulls in `audiokitui` and `controls` behind it, and it is linked into the app's Frameworks phase (`:187-195`) even though its only consumer — `AudioMeters/UnifiedAudioAnalyser.swift:2` — is a single `import AudioKit` line. The root `README.md:45` says the graph is "built on `AVAudioEngine`" — correct — but implies AudioKit is central; it is not.
 
 **Fix:** remove the package, or stop linking it into the app target.
 
@@ -1173,13 +1184,14 @@ Switching to `.Artwork` does not detach the tap, stop the 60 Hz timer, or free t
 
 ## Recommended fix order
 
-**Phase 1 — make it build.** Nothing else is verifiable until this is done.
+**Phase 1 — make it build.** Done. The app target compiles 31 of 33 Swift files and `clean build` succeeds.
 
-1. [A1](#a1-the-target-compiles-7-of-30-swift-files) target membership
-2. [G1](#g1-missing-grainoverlay-shader-and-bluenoise64-asset) — drop the `grainOverlay` call to unblock, then restore it
-3. [E2](#e2-rt-closure-calls-a-main-actor-method) will now fail to compile; fix with [E1](#e1-rt-thread-allocates-19-mbs)
-4. [A3](#a3-app-group-entitlement-is-empty) entitlements
-5. [A2](#a2-both-test-targets-are-empty) test membership, so [G3](#g3-three-incompatible-frequencyband-conventions) can be verified against `Q3analysertests.swift`
+1. ~~[A1](#a1-target-membership-is-an-inclusion-allowlist-and-silently-swallows-files) target membership~~ — **fixed**; `Album_view.swift` and both diagnostics files are members
+2. [A2](#a2-both-test-targets-are-empty) test membership, so [G3](#g3-three-incompatible-frequencyband-conventions) can be verified against `Q3analysertests.swift`
+3. [A3](#a3-app-group-entitlement-is-empty) entitlements — still blocking the import/share path, and still the prerequisite for all of section B
+4. [E2](#e2-rt-closure-calls-a-main-actor-method) — nominal isolation, not a compile error; fix with [E1](#e1-rt-thread-allocates-19-mbs) in Phase 3
+
+> **The two items removed from this phase were both wrong.** [G1](#g1-missing-grainoverlay-shader-and-bluenoise64-asset) and [A4](#a4-grainoverlay-is-undefined-and-tunneleffect-is-mis-called) were expected to surface as hard compile errors once membership was repaired. They do not: `SwiftUI.ShaderLibrary` resolves members through `subscript(dynamicMember: String) -> ShaderFunction`, so `ShaderLibrary.grainOverlay(...)` type-checks whether or not `grainOverlay` exists in any `.metal` file. Both are **runtime** failures. Similarly `tunnelEffect` is called with 8 arguments against a 9-parameter Metal signature, which is also unchecked until resolution. See [03 §9](#9-things-a-reader-should-not-assume).
 
 **Phase 2 — stop losing user data.** All are independent of the build and all can corrupt a library.
 
