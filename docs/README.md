@@ -6,8 +6,10 @@ Fourteen reference documents describing how the Punches audio-visualiser app is 
 
 Two documents change how you should read everything else:
 
-1. **[03 — Project Structure & Build](03-project-structure-and-build.md)** — the `Punches3` target compiles **7 of the repository's 30 Swift files**. Everything outside those seven is missing at compile time, so **the project does not build as committed**. Until target membership is repaired, treat the rest of this suite as a description of the *intended* codebase rather than the running one.
+1. **[03 — Project Structure & Build](03-project-structure-and-build.md)** — how the `Punches3` target collects its sources, and the trap in `membershipExceptions`. Target membership has since been repaired: `AudioEngines`, `AudioMeters`, `Services` and `View` are now listed in the target's `fileSystemSynchronizedGroups`, so **all 39 project Swift files compile** and both the simulator and device builds succeed.
 2. **[14 — Known Issues & Risks](14-known-issues.md)** — a severity-ranked register of **91 entries** across seven categories — 13 Critical, 32 High, 28 Medium, 18 Low — each with evidence, impact, and fix.
+
+> **Status note.** The library layer described throughout this suite was replaced by the SQLite-backed store merged from `laptop`: `LibraryStore`, `LibrarySchema`, `LibraryMigration`, `LibraryReconciler`, `LibraryImportPipeline` and `LibraryImportReport` are new, `cleanupOrphanedFiles` is gone, and the library root is an app-owned subdirectory rather than the Documents root. Entries **C1**, **C2**, **C3**/**E6**, **C12** and **G1**/**A4**/**G1.3** are addressed by that work; treat their entries as historical.
 
 ## The documents
 

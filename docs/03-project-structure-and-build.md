@@ -2,7 +2,7 @@
 
 How the Punches repository is laid out, how the Xcode project is configured, and — importantly — **which of those files the build actually compiles.**
 
-> **Read this before trusting any other document.** The `Punches3` target now compiles **31 of the 33 Swift files in the repository** and builds clean. The mechanism that gets them there is not the one Apple's documentation describes, and the Sources phase is not the membership list — see [§5](#5-target-membership-and-the-trap-in-it) before concluding anything about whether a given file is compiled. Treat the rest of this suite as a description of the codebase, and re-verify build claims against `Punches3.SwiftFileList`.
+> **Read this before trusting any other document.** The `Punches3` target now compiles **39 of the 41 Swift files in the repository** and builds clean. The mechanism that gets them there is not the one Apple's documentation describes, and the Sources phase is not the membership list — see [§5](#5-target-membership-and-the-trap-in-it) before concluding anything about whether a given file is compiled. Treat the rest of this suite as a description of the codebase, and re-verify build claims against `Punches3.SwiftFileList`.
 
 ---
 
@@ -30,13 +30,13 @@ Punches/
 │   ├── Punches3-Info.plist           ← background audio only
 │   └── silly_speed_ios.entitlements  ← app group declared, referenced by nothing
 │
-├── ── synchronized folders, all files EXCLUDED from the target ──
+├── ── synchronized folders, ALL Swift files now compiled (except Tests/) ──
 │   ├── AudioEngines/AppleAudioEngine.swift
-│   ├── AudioMeters/                  (7 files: analyser, Q3, goniometer, Metal)
-│   ├── Services/                     (7 files: library, playlist, import, artwork, …)
-│   ├── View/                         (11 files: UI + 4 stitchable .metal)
+│   ├── AudioMeters/                  (6 files: analyser, Q3, goniometer)
+│   ├── Services/                     (14 files: store, migration, library, playlist, …)
+│   ├── View/                         (8 files: UI + 4 stitchable .metal)
 │   ├── AudioShare/                   (share extension: controller, plist, entitlements)
-│   └── Tests/                        (2 files)
+│   └── Tests/                        (2 files — NOT compiled, §5.5)
 │
 └── Punches3.xcodeproj/
     ├── project.pbxproj
@@ -55,7 +55,7 @@ Three targets, all created with Xcode 26.2 (`project.pbxproj:323-335`).
 
 | Target | UUID | Type | Product | Notes |
 |---|---|---|---|---|
-| `Punches3` | `CB7BBCBB…` | application | `Punches3.app` | the app; **7 sources** |
+| `Punches3` | `CB7BBCBB…` | application | `Punches3.app` | the app; **39 Swift files** |
 | `Punches3Tests` | `CB7BBCCC…` | unit-test bundle | `Punches3Tests.xctest` | **empty Sources phase**; no tests run |
 | `Punches3UITests` | `CB7BBCD2…` | UI-test bundle | `Punches3UITests.xctest` | **empty Sources phase**; no UI test files exist |
 
@@ -141,43 +141,42 @@ audio_engine_protocol.swift  audio_manager.swift   pitch_algorithm.swift
 AudioHealthHUD.swift       DiagnosticsService.swift DiagnosticsView.swift
 ```
 
-**This list is not the whole story, and reading it as though it were is what caused most of the confusion in earlier revisions of this document.** The target also draws in every file belonging to a `PBXFileSystemSynchronizedRootGroup` (§5.2), and that is 24 more Swift files.
+**This list is not the whole story.** The target also draws in every file belonging to a `PBXFileSystemSynchronizedRootGroup` (§5.2), which is where the other 30 Swift files come from.
 
-### 5.2 `membershipExceptions` is an INCLUSION list here — not an exclusion list
+### 5.2 How a synchronized folder joins a target
 
-Xcode 16+ uses `PBXFileSystemSynchronizedRootGroup` so a folder's files can join a target without per-file `PBXBuildFile` entries. Apple's documented semantics for `PBXFileSystemSynchronizedBuildFileExceptionSet.membershipExceptions` is that it lists files **excluded** from the named target.
+Xcode 16+ uses `PBXFileSystemSynchronizedRootGroup` so a folder's files can join a target without per-file `PBXBuildFile` entries. A group is bound to a target if **either** the target lists it in `fileSystemSynchronizedGroups` **or** some `PBXFileSystemSynchronizedBuildFileExceptionSet` names that target. Both routes are live in this project:
 
-**In this project it behaves as the opposite: an inclusion allowlist.** A file in a synchronized folder reaches the compiler *if and only if* it is listed in that folder's `membershipExceptions`. Verified empirically — `View/Album_view.swift` sat on disk, unlisted, and was silently not compiled; adding one line to the `View` list made it compile with zero code changes.
-
-| Group | Exception set | Line | Listed (⇒ compiled) |
+| Group | In `fileSystemSynchronizedGroups`? | Exception set naming `Punches3`? | Compiles |
 |---|---|---|---|
-| `AudioEngines` | `CB7BBD6D…` | `:58-64` | `AppleAudioEngine.swift` |
-| `AudioMeters` | `CB7BBD70…` | `:81-93` | all **7** (6 Swift + `Shaders.metal`) |
-| `AudioShare` | `CB7BBD71…` | `:94-102` | `ShareViewController.swift`, `MainInterface.storyboard` ×2 |
-| `Services` | `CB7BBD72…` | `:103-115` | all **7** |
-| `View` | `CB7BBD73…` | `:116-133` | **12** — 7 Swift + `BlueNoise64.png` + 4 `.metal` |
-| `Tests` (for `Punches3`) | `CB7BBD6E…` | `:65-72` | both test files |
-| `Tests` (for `Punches3Tests`) | `CB7BBD6F…` | `:73-80` | both test files |
+| `AudioEngines` | yes | removed | **yes** |
+| `AudioMeters` | yes | removed | **yes** |
+| `Services` | yes | removed | **yes** |
+| `View` | yes | removed | **yes** |
+| `AudioShare` | **no** | `CB7BBD71…` | **yes** |
+| `Tests` | yes | `CB7BBD6E…` | no — Sources phase empty (§5.5) |
 
-> ⚠️ **Do not "fix" this by deleting the exception sets.** The remedy that looks correct under Apple's documented semantics — remove the `PBXFileSystemSynchronizedBuildFileExceptionSet` objects and add the groups to `fileSystemSynchronizedGroups` so the lists become pure exclusions — would very plausibly remove all 24 files listed above from the target. Earlier revisions of this document recommended exactly that; it is wrong for this tree. See §8.1.
+**Once a group is bound, every file in it reaches the compiler.** `membershipExceptions` does **not** filter them out. This was measured, not inferred: with the four folders in `fileSystemSynchronizedGroups`, the eight `Services/Library*.swift` files — which appear in no exception list, because they did not exist when the lists were written — all compile, as do the 6 previously-unlisted entries in `View/`.
 
-Note also that `Punches3`'s `fileSystemSynchronizedGroups` (`:270-272`) lists **only** `Tests`, yet the other five groups demonstrably contribute files. Under this project's semantics the exception sets' `target` field — not the target's group list — is what binds a group to a target. Do not use `fileSystemSynchronizedGroups` as a membership oracle here.
+> ⚠️ **Earlier revisions of this document claimed the opposite** — that `membershipExceptions` is an *inclusion allowlist* here, so an unlisted file is silently dropped. That claim is **wrong**. It rested on `View/Album_view.swift`, which genuinely failed to compile when unlisted; but the folder was not bound to the target at all at that point, so no allowlist semantics were being exercised. Once the folder is bound, listing is neither necessary nor sufficient to exclude.
+
+`AudioShare` is the useful control: it is *not* in `fileSystemSynchronizedGroups`, yet `ShareViewController.swift` compiles — bound purely by its exception set's `target` field. So neither field alone is a membership oracle; `Punches3.SwiftFileList` is.
 
 ### 5.3 The result
 
-**33** Swift files in the repository; **31 reach the compiler**, plus 5 `.metal` files and one generated file, for 32 lines in `Punches3.SwiftFileList`:
+**41** Swift files in the repository; **39 reach the compiler**, plus 5 `.metal` files and one generated file:
 
 | Location | Swift in repo | Compiled |
 |---|---|---|
-| repository root | 9 | **9** (explicit `PBXBuildFile` + the `View`-style allowlists don't apply) |
-| `View/` | 7 | **7** |
-| `Services/` | 7 | **7** |
+| repository root | 11 | **11** (explicit `PBXBuildFile`; no group covers the root, §5.4) |
+| `View/` | 8 | **8** |
+| `Services/` | 14 | **14** |
 | `AudioMeters/` | 6 | **6** |
 | `AudioEngines/` | 1 | **1** |
 | `AudioShare/` | 1 | **1** |
 | `Tests/` | 2 | **0** |
 
-The only files in the repository that do not compile are the two in `Tests/` (§5.4). `Punches3.build/Debug-iphoneos/…/Punches3.SwiftFileList` is the ground truth; the Sources phase is not.
+The only files in the repository that do not compile are the two in `Tests/` (§5.5). Both the simulator and device builds succeed with zero errors. `Punches3.build/Debug-…/…/Punches3.SwiftFileList` is the ground truth; the Sources phase is not.
 
 ### 5.4 Root-level files get no automatic membership
 
@@ -239,7 +238,7 @@ $ xcodebuild -project Punches3.xcodeproj -scheme Punches3 -destination 'generic/
 ** BUILD SUCCEEDED **
 ```
 
-Until `View/Album_view.swift` was added to the `View` membership allowlist, this instead reported two `cannot find '<Type>' in scope` errors against `View/content_view.swift` — and only two, because `Album_view.swift` itself was never compiled. A small error count was the symptom, not reassurance.
+Until the four synchronized folders were bound to the target, this instead reported a flood of `cannot find '<Type>' in scope` errors against `View/content_view.swift` and `audio_manager.swift` — the services and views those files reference were never compiled at all. A small error count was the symptom, not reassurance.
 
 These are the commands that matter:
 
@@ -251,23 +250,23 @@ These are the commands that matter:
 | Clean | `xcodebuild -project Punches3.xcodeproj -scheme Punches3 clean` |
 | List schemes | `xcodebuild -project Punches3.xcodeproj -list` |
 
-The device build **succeeds from clean with zero errors**. The test targets are still empty, so `test` builds an empty bundle and reports nothing ([§5.5](#55-the-test-targets-are-empty-too)).
+The device build **succeeds from clean with zero errors**, as does the simulator build, and `Punches3.SwiftFileList` lists all 39 project files. The test targets are still empty, so `test` builds an empty bundle and reports nothing ([§5.5](#55-the-test-targets-are-empty-too)).
 
 ### 8.1 Adding a file to the target
 
-**To add a file inside a synchronized folder** (`View/`, `Services/`, `AudioMeters/`, `AudioEngines/`, `AudioShare/`): add its name to that folder's `PBXFileSystemSynchronizedBuildFileExceptionSet.membershipExceptions`. That is the entire change — no `PBXFileReference`, no `PBXBuildFile`, no Sources-phase entry. This is how `View/Album_view.swift` was added, and it compiled with zero code changes.
+**To add a file inside a synchronized folder** (`View/`, `Services/`, `AudioMeters/`, `AudioEngines/`, `AudioShare/`): **nothing at all.** Each of those groups is bound to `Punches3` ([§5.2](#52-how-a-synchronized-folder-joins-a-target)), so any file dropped in is picked up automatically. This is how all eight `Services/Library*.swift` files joined the target with no project edit.
 
 **To add a file at the repository root**, where no synchronized group applies ([§5.4](#54-root-level-files-get-no-automatic-membership)), three manual edits are required: a `PBXFileReference`, a `PBXBuildFile` marked `in Sources`, and an entry in the main group's `children`.
 
-> 🚫 **Do not delete the `PBXFileSystemSynchronizedBuildFileExceptionSet` objects, and do not "convert" `membershipExceptions` into Apple's documented exclusion lists by adding these groups to `fileSystemSynchronizedGroups`.** Earlier revisions of this document prescribed precisely that, on the assumption that the lists were exclusion sets. They are not, in this tree ([§5.2](#52-membershipexceptions-is-an-inclusion-list-here--not-an-exclusion-list)). Following that advice would remove the 24 files that currently compile, and is the single easiest way to break this build from a green state.
+> ✅ **The four exception sets for `AudioEngines`/`AudioMeters`/`Services`/`View` were deleted, and those groups added to `fileSystemSynchronizedGroups`.** Earlier revisions of this document forbade precisely that change on the theory that `membershipExceptions` is an inclusion allowlist ([§5.2](#52-how-a-synchronized-folder-joins-a-target)). The theory was wrong, the folders were contributing nothing, and the app target was compiling 9 of 41 Swift files. The change was made, then verified by build: **all 39 project files now compile and both destinations build clean.**
 
-If this project is ever migrated to Apple's documented exclusion semantics, it has to be a single verified change — build afterwards and confirm `Punches3.SwiftFileList` still contains all 31 project files — never incrementally.
+If you ever need a file *out* of the target, do not rely on `membershipExceptions` — it does not exclude. Move the file to a non-member group, or drop the file from the folder.
 
 ---
 
 ## 9. Things a reader should not assume
 
-1. **That the Sources phase lists everything that compiles.** It lists 9 of 31; the other 22 arrive via synchronized groups. [§5](#5-target-membership-and-the-trap-in-it)
+1. **That the Sources phase lists everything that compiles.** It lists 11 of 39; the other 28 arrive via synchronized groups. [§5](#5-target-membership-and-the-trap-in-it)
 2. **That a file on disk is in the target.** It is not, unless it is listed in a synchronized folder's `membershipExceptions` or carries a root-level `PBXBuildFile`. This has silently swallowed two whole features already. [§5.4](#54-root-level-files-get-no-automatic-membership)
 3. **That the tests run.** Both test bundles are empty. [§5.5](#55-the-test-targets-are-empty-too)
 4. **That the share extension exists.** The files are right; the target is absent. [§6](#6-infoplist-and-entitlements)

@@ -2,7 +2,9 @@
 
 A severity-ranked register of every defect, dead path, and documentation error found in the Punches codebase. Each entry states the evidence, the impact, and the fix.
 
-**This is the document to read first after [03](03-project-structure-and-build.md).** The project does not build as committed, and several of the highest-severity findings below have never been surfaced by the compiler because of that.
+**This is the document to read first after [03](03-project-structure-and-build.md).** The project now builds — see [A1](#a1-target-membership-silently-swallowed-files) for what was wrong and how it was repaired. Several of the highest-severity findings below were never surfaced by the compiler while membership was broken, so this register is longer than the live defect list; entries marked **historical** were addressed by the SQLite library layer merged from `laptop` and are retained for context.
+
+> **What the merge changed.** `laptop` added the SQLite-backed library (`LibraryStore`, `LibrarySchema`, `LibraryMigration`, `LibraryReconciler`, `LibraryImportPipeline`, `LibraryImportReport`, `LibraryEnvironment`) and bound the four synchronized folders to the target. **C1**, **C2**, **C3**/**E6**, **C12** and **G1**/**A4**/**G1.3** are addressed by that work and are now historical. The merge itself required a follow-up commit to make the branch compile at all — see that commit for the 20 defects it carried.
 
 > **About the Exploration notes.** Entries carry an **Exploration notes** block recording the hypotheses that have already been ruled out, the instrumentation that would confirm or refute the rest, and any trap for the next person to look. This exists so that a hypothesis is not re-investigated from scratch, and so that a *failed* approach is as visible as a successful one. If you test one of these, update the block — including when the test shows the entry is **wrong**. One entry has already been corrected that way: [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue) previously claimed a variable had no readers anywhere, which was false. All Critical and High entries carry the block; the Medium and Low set does not yet, and should be filled in as each is picked up.
 
@@ -46,28 +48,27 @@ User-reported symptoms and the entries that explain them. A single report can ha
 
 ## A — Build & Project Structure
 
-### A1 Target membership is an inclusion allowlist, and silently swallows files
+### A1 Target membership silently swallowed files
 
-**Critical.**
+**Critical — fixed.**
 
-`Punches3`'s Sources phase lists nine root-level files explicitly (`project.pbxproj:396-409`). It does **not** list the other 22 Swift files that compile — those arrive through five `PBXFileSystemSynchronizedRootGroup` groups.
+`Punches3`'s Sources phase lists eleven root-level files explicitly (`project.pbxproj`). It does **not** list the other 28 Swift files that compile — those arrive through `PBXFileSystemSynchronizedRootGroup` groups.
 
-The mechanism is the trap. Apple's documented semantics for `PBXFileSystemSynchronizedBuildFileExceptionSet.membershipExceptions` is that it lists files **excluded** from the target. **In this project it behaves as an inclusion allowlist**: a file compiles if and only if it is named in that folder's list. Verified against `Punches3.SwiftFileList`, which is the ground truth — not the Sources phase, which prior revisions of this document wrongly treated as complete.
+**This silently swallowed three features.** `View/Album_view.swift` (692 lines) was added by commit `775bea1`, which touched no project file, so it never compiled; the only symptom was two `cannot find 'AlbumsListView'/'EmptyAlbumView' in scope` errors at `View/content_view.swift`. `DiagnosticsService.swift` and `DiagnosticsView.swift` were missed the same way — no synchronized group covers the repository root (§5.4 of [03](03-project-structure-and-build.md)) and they had no root-level `PBXBuildFile`. On top of that, `AudioEngines`, `AudioMeters`, `Services` and `View` were not bound to the target at all, so the app target compiled **9 of 41** Swift files and could not build.
 
-**This has already swallowed two features silently.** `View/Album_view.swift` (692 lines) was added by commit `775bea1`, which touched no project file at all, so it never compiled; the only symptom was two `cannot find 'AlbumsListView'/'EmptyAlbumView' in scope` errors at `View/content_view.swift:211` and `:217`. `DiagnosticsService.swift` and `DiagnosticsView.swift` were then missed the same way, because no synchronized group covers the repository root (§5.4 of [03](03-project-structure-and-build.md)) and they had no root-level `PBXBuildFile`.
+**Fixed, and the earlier fix in this entry was wrong.** A previous revision of this entry added each missing filename to its folder's `membershipExceptions` and forbade deleting the exception sets. That diagnosis was incorrect: it inferred "inclusion allowlist" semantics from `Album_view.swift`'s failure, when the folder simply was not bound to the target, so no allowlist was in play. The actual repair, from the `laptop` merge, was to **delete the four exception sets and list the four groups in `fileSystemSynchronizedGroups`** — the change this entry previously prohibited.
 
-**Fixed.** `Album_view.swift` added to the `View` allowlist; both diagnostics files given `PBXFileReference` + `PBXBuildFile` + Sources entries. The build now succeeds from clean with zero errors.
+**Measured result:** `Punches3.SwiftFileList` now contains all **39** project Swift files, and both the simulator and device builds succeed with zero errors. Membership is unchanged for `AudioShare`, which was already bound by its exception set's `target` field despite being absent from `fileSystemSynchronizedGroups`.
 
-**Fix (if it recurs):** for a file inside a synchronized folder, add its name to that folder's `membershipExceptions` — one line, no other edit. For a root-level file, add the three entries. Never delete the exception sets to "fix" this; see below.
-
-> 🚫 **Do not delete the exception sets or add the groups to `fileSystemSynchronizedGroups` to convert the lists into exclusion sets.** That is the remedy implied by Apple's documented semantics and it was previously recommended in this suite. In this tree it would remove the 24 files that currently compile.
+**If a new file fails to appear in a build:** first confirm it is not at the repository root (§5.4 of [03](03-project-structure-and-build.md)) — root files need the three manual entries. Inside a synchronized folder, membership is automatic; the real cause is nearly always a compile error *in that file*, not a missing project entry.
 
 **Exploration notes.**
-- **Ruled out:** "the Sources phase is the whole list." It is 9 of 31.
-- **Ruled out:** "`fileSystemSynchronizedGroups` tells you membership." It lists only `Tests`, yet the other five groups demonstrably contribute files. The exception sets' `target` field is what binds a group here.
+- **Ruled out:** "the Sources phase is the whole list." It is 11 of 39.
+- **Ruled out:** "`fileSystemSynchronizedGroups` is the membership oracle." It omitted `AudioShare`, which compiles anyway.
 - **Ruled out:** "a source-generation phase adds them." There is no script or generated-source phase.
-- **To confirm:** read `Punches3.build/Debug-iphoneos/…/Punches3.SwiftFileList`, or build and read the `SwiftCompile` lines. Do not use the Sources phase.
-- **A small error count is the symptom, not reassurance.** `Album_view.swift` was 692 lines of unchecked code and produced exactly two errors. Always verify membership after adding a file.
+- **Ruled out — and this was the register's own mistake:** "`membershipExceptions` is an inclusion allowlist in this tree." Disproved by the eight `Services/Library*.swift` files, which appear in no list and all compile. Once a group is bound, every file in it compiles; `membershipExceptions` does not exclude.
+- **To confirm any membership claim:** build, then read `Punches3.build/Debug-…/…/Punches3.SwiftFileList`, or the `SwiftCompile` lines. Never the Sources phase.
+- **A small error count is the symptom, not reassurance.** `Album_view.swift` was 692 lines of unchecked code and produced exactly two errors.
 
 ### A2 Both test targets are empty
 
@@ -99,7 +100,7 @@ The mechanism is the trap. Apple's documented semantics for `PBXFileSystemSynchr
 
 ### A4 `grainOverlay` is missing and `tunnelEffect` is mis-called
 
-**Critical.**
+**Critical — fixed.** Both functions are now defined in `View/TunnelShader.metal` and resolve from `default.metallib`; `BlueNoise64.png` is present in the app bundle. Verified with `xcrun metal-nm`.
 
 See [G1](#g1-missing-grainoverlay-shader-and-bluenoise64-asset). **Neither half is a compile error**, contrary to earlier revisions of this entry.
 
@@ -348,7 +349,7 @@ No iTunes/Files file sharing, and no `LSSupportsOpeningDocumentsInPlace`. Intent
 
 ### C1 Master-playlist recovery destroys every user playlist
 
-**Critical.**
+**Critical — historical.** Addressed by the SQLite library layer merged from `laptop`: `clearZombiePlaylists` is gone and playlist rows are written transactionally by `LibraryStore.persist`, so a decode failure can no longer trigger a wholesale delete. `LibraryMigration` also carries a lossless decoder for the legacy `UserDefaults` index.
 
 If `masterPlaylistID` becomes unreadable for any reason — decode failure, partial `UserDefaults` write, a schema change to `Playlist` that makes `loadPlaylists()` return fewer entries, a sync conflict — `clearZombiePlaylists` deletes **all** playlists including the user's, and rebuilds only the master. No backup, no prompt, no undo. `AudioLibraryService`'s `:63-67` back-fill is also O(n²).
 
@@ -365,7 +366,7 @@ If `masterPlaylistID` becomes unreadable for any reason — decode failure, part
 
 ### C2 `cleanupOrphanedFiles` deletes untracked files
 
-**Critical.**
+**Critical — historical.** `cleanupOrphanedFiles` was deleted outright in the `laptop` merge. The library root is now an app-owned subdirectory (`Documents/Punches/`, or `<group>/Library/`), never the Documents root, so there is no longer a user-visible directory being swept.
 
 `AudioLibraryService.cleanupOrphanedFiles()` (`:92-106`) removes anything in `fileDirectory` that is not in the persisted `audioFiles` array, with a single hardcoded exemption for the literal name `"Artwork"` (`:101`). A file present on disk but absent from `UserDefaults` — after a failed save, a partial migration, or a restore from backup — is destroyed on next launch.
 
@@ -379,7 +380,7 @@ If `masterPlaylistID` becomes unreadable for any reason — decode failure, part
 
 ### C3 `Task.detached` races `savePlaylists()` on the same key
 
-**High — FIXED in the working tree, uncommitted.**
+**High — historical.** Resolved by the `laptop` merge: `savePlaylists()` now hands a `LibrarySnapshot` to `LibraryStore.persist`, which writes inside a transaction under a lock rather than racing a detached `UserDefaults` write.
 
 `PlaylistService.createPlaylist` (`:118-129`) snapshots `manager.playlists` and writes it to `UserDefaults` from a `.utility` detached task. Every other mutator writes the same key synchronously from main. `UserDefaults.set` is last-writer-wins, so a create followed by any faster mutation loses the playlist. It is intermittent because `.utility` usually loses to main. The detached task also reads `self.manager.playlistsKey` off the main actor — an isolation violation that, unlike [E2](#e2-rt-closure-calls-a-main-actor-method), has no compile-time consequence here.
 
@@ -471,7 +472,7 @@ There is no serialisation or coalescing anywhere: `savePlaylists`, `saveAudioFil
 
 ### C12 An empty library index makes the app delete every file it can see
 
-**Critical.**
+**Critical — historical.** This was the root cause of the reported "no file permanence". The `laptop` merge makes the directory the source of truth and the index a cache, exactly as this entry's fix prescribed: nothing is deleted on launch, and `LibraryMigration` adopts unindexed files off disk rather than discarding them.
 
 > **User report:** *"there is no file permanence when you add files, it disappears after closing the application."*
 
@@ -998,10 +999,10 @@ Three further defects in the same handlers, which apply even when registration s
 See [G1](#g1-missing-grainoverlay-shader-and-bluenoise64-asset).
 
 **Exploration notes.**
-- **Ruled out:** "the tunnel shader file is missing." It exists; the defect is the Swift wrapper's call, which is recorded as [A4](#a4-grainoverlay-is-undefined-and-tunneleffect-is-mis-called). Same root cause, recorded from the settings side.
+- **Ruled out:** "the tunnel shader file is missing." It exists; the defect is the Swift wrapper's call, which is recorded as [A4](#a4-grainoverlay-is-missing-and-tunneleffect-is-mis-called). Same root cause, recorded from the settings side.
 - **Ruled out:** "it is gated behind a quality tier and never built." It is in the live tunnel path and compiles whenever membership is repaired.
 - **To confirm:** duplicate of A4 — one compiler diagnostic settles both. Do not spend separate time here.
-- **Fix order note:** the "drop the call, then restore it" advice under [A4](#a4-grainoverlay-is-undefined-and-tunneleffect-is-mis-called) applies verbatim; this entry should be closed by the same change.
+- **Fix order note:** the "drop the call, then restore it" advice under [A4](#a4-grainoverlay-is-missing-and-tunneleffect-is-mis-called) applies verbatim; this entry should be closed by the same change.
 
 ### F3 Water, tunnel and smoke are mutually exclusive by construction
 
@@ -1083,7 +1084,7 @@ All three are `@Published`, persisted, and set by every preset — reachable **o
 
 ### G1 Missing `grainOverlay` shader and `BlueNoise64` asset
 
-**Critical.**
+**Critical — fixed.** `grainOverlay` is defined in `View/TunnelShader.metal` with the `blueNoise` texture parameter, `ShaderEffects.grainOverlay` passes it, and `BlueNoise64.png` ships in the bundle. All five stitchable functions are present in the built metallib.
 
 Three defects in ~30 lines of `View/ShaderEffects.swift`:
 
@@ -1184,20 +1185,20 @@ Switching to `.Artwork` does not detach the tap, stop the 60 Hz timer, or free t
 
 ## Recommended fix order
 
-**Phase 1 — make it build.** Done. The app target compiles 31 of 33 Swift files and `clean build` succeeds.
+**Phase 1 — make it build.** Done. The app target compiles 39 of 41 Swift files and `clean build` succeeds on both simulator and device.
 
-1. ~~[A1](#a1-target-membership-is-an-inclusion-allowlist-and-silently-swallows-files) target membership~~ — **fixed**; `Album_view.swift` and both diagnostics files are members
-2. [A2](#a2-both-test-targets-are-empty) test membership, so [G3](#g3-three-incompatible-frequencyband-conventions) can be verified against `Q3analysertests.swift`
-3. [A3](#a3-app-group-entitlement-is-empty) entitlements — still blocking the import/share path, and still the prerequisite for all of section B
+1. ~~[A1](#a1-target-membership-silently-swallowed-files) target membership~~ — **fixed**; all four synchronized folders bound to the target, all 39 project files compile
+2. [A2](#a2-both-test-targets-are-empty) test membership, so [G3](#g3-three-incompatible-frequencyband-conventions) can be verified against `Q3analysertests.swift` — **still open**
+3. [A3](#a3-app-group-entitlement-is-empty) entitlements — still blocking the import/share path, and still the prerequisite for all of section B. Note `LibraryEnvironment` now degrades to an app-private `Documents/Punches/` and logs a `fault` rather than silently falling back to the Documents root.
 4. [E2](#e2-rt-closure-calls-a-main-actor-method) — nominal isolation, not a compile error; fix with [E1](#e1-rt-thread-allocates-19-mbs) in Phase 3
 
-> **The two items removed from this phase were both wrong.** [G1](#g1-missing-grainoverlay-shader-and-bluenoise64-asset) and [A4](#a4-grainoverlay-is-undefined-and-tunneleffect-is-mis-called) were expected to surface as hard compile errors once membership was repaired. They do not: `SwiftUI.ShaderLibrary` resolves members through `subscript(dynamicMember: String) -> ShaderFunction`, so `ShaderLibrary.grainOverlay(...)` type-checks whether or not `grainOverlay` exists in any `.metal` file. Both are **runtime** failures. Similarly `tunnelEffect` is called with 8 arguments against a 9-parameter Metal signature, which is also unchecked until resolution. See [03 §9](#9-things-a-reader-should-not-assume).
+> **The two items removed from this phase were both wrong.** [G1](#g1-missing-grainoverlay-shader-and-bluenoise64-asset) and [A4](#a4-grainoverlay-is-missing-and-tunneleffect-is-mis-called) were expected to surface as hard compile errors once membership was repaired. They did not surface as *Swift* errors — `SwiftUI.ShaderLibrary` resolves members through `subscript(dynamicMember: String) -> ShaderFunction`, so `ShaderLibrary.grainOverlay(...)` type-checks whether or not `grainOverlay` exists. But they **did** surface as hard **Metal** errors the moment `View/` was bound, because the `.metal` files are compiled rather than resolved dynamically. Both are now fixed; see the `laptop` follow-up commit.
 
-**Phase 2 — stop losing user data.** All are independent of the build and all can corrupt a library.
+**Phase 2 — stop losing user data.** Largely landed by the `laptop` merge; what remains is listed here.
 
-6. [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see) **first** — the directory must become the source of truth before anything else in this phase is safe to test
-7. [C1](#c1-master-playlist-recovery-destroys-every-user-playlist) · [C2](#c2-cleanuporphanedfiles-deletes-untracked-files) · [C3](#c3-taskdetached-races-saveplaylists-on-the-same-key) · [C5](#c5-reorderplaylistsongs-captures-index-across-a-dispatch-hop)
-8. [B7](#b7-processpendingimports-deletes-the-whole-directory) · [B6](#b6-unsynchronised-fileurlsappend-in-the-extension)
+6. ~~[C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see)~~ — **historical**; the directory is the source of truth and nothing is deleted on launch
+7. ~~[C1](#c1-master-playlist-recovery-destroys-every-user-playlist)~~ · ~~[C2](#c2-cleanuporphanedfiles-deletes-untracked-files)~~ · ~~[C3](#c3-taskdetached-races-saveplaylists-on-the-same-key)~~ — **historical**. [C5](#c5-reorderplaylistsongs-captures-index-across-a-dispatch-hop) remains open.
+8. [B7](#b7-processpendingimports-deletes-the-whole-directory) · [B6](#b6-unsynchronised-fileurlsappend-in-the-extension) — the extension side was rewritten by `laptop` to write one inbound file per share; the app-side consumer is now `LibraryImportPipeline`, so re-verify both before closing
 
 **Phase 3 — make the audio thread correct.**
 
