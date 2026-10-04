@@ -640,13 +640,12 @@ class UnifiedAudioAnalyser: ObservableObject {
       let centerFreq = sqrt(loFreq * hiFreq)
 
       // Map frequency range to FFT bin range
-      let startBin = max(0, Int((loFreq / nyquist) * Float(halfSize)))
-      let endBin = min(halfSize, max(startBin + 1, Int((hiFreq / nyquist) * Float(halfSize))))
+      let bins = binRange(from: loFreq, to: hiFreq, binCount: halfSize, nyquist: nyquist)
 
       // Peak magnitude in this band — max is more representative than RMS for
       // spectrum display because it preserves transient and narrow-band content.
       var peakMag: Float = 0
-      for bin in startBin..<endBin {
+      for bin in bins {
         if magnitudes[bin] > peakMag { peakMag = magnitudes[bin] }
       }
 
@@ -681,6 +680,40 @@ class UnifiedAudioAnalyser: ObservableObject {
       self.q3SpectrumBands = newBands
       self.q3PeakHolds = newPeaks
     }
+  }
+
+  /// Maps a frequency band onto a half-open range of FFT bin indices.
+  ///
+  /// Both band edges are log-interpolated up to 20 kHz, but `nyquist` comes from
+  /// whatever the audio session is actually running at. Any output rate at or
+  /// below 40 kHz — 32 kHz Bluetooth being the common case — puts `nyquist`
+  /// under the top of the band sweep, so the upper bands map to bins at or past
+  /// `halfSize`. Without a clamp those edges invert and constructing the range
+  /// traps with `Range requires lowerBound <= upperBound`, killing the app the
+  /// moment the route changes.
+  ///
+  /// The returned range satisfies `0 <= lowerBound < upperBound <= binCount`,
+  /// so it is always safe to iterate and every index is inside `magnitudes`.
+  ///
+  /// - Parameters:
+  ///   - lowerFreq: Band's lower edge, in Hz.
+  ///   - upperFreq: Band's upper edge, in Hz.
+  ///   - binCount: Number of usable bins, i.e. `fftSize / 2`.
+  ///   - nyquist: `sampleRate / 2`, taken from the live audio format.
+  internal func binRange(
+    from lowerFreq: Float,
+    to upperFreq: Float,
+    binCount: Int,
+    nyquist: Float
+  ) -> Range<Int> {
+    // Clamping the `Float` before the `Int(...)` conversion matters as much as
+    // clamping the result: a low `nyquist` sends the ratio far past
+    // `Float(halfSize)`, and an unclamped conversion would trap on `Int` overflow
+    // with a different message than the range it is here to prevent.
+    let lastBin = binCount - 1
+    let lower = max(0, min(lastBin, Int(min(Float(lastBin), (lowerFreq / nyquist) * Float(binCount)))))
+    let upper = max(lower + 1, min(binCount, Int(min(Float(binCount), (upperFreq / nyquist) * Float(binCount)))))
+    return lower..<upper
   }
 
   /// Returns an approximate A-weighting correction in dB for the given frequency.

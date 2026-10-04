@@ -60,11 +60,10 @@ extension UnifiedAudioAnalyser {
       let hiFreq = pow(10.0, minFreqLog + hiFraction * (maxFreqLog - minFreqLog))
       let centerFreq = sqrt(loFreq * hiFreq)
 
-      let startBin = max(0, Int((loFreq / nyquist) * Float(halfSize)))
-      let endBin = min(halfSize, max(startBin + 1, Int((hiFreq / nyquist) * Float(halfSize))))
+      let bins = binRange(from: loFreq, to: hiFreq, binCount: halfSize, nyquist: nyquist)
 
       var peakMag: Float = 0
-      for bin in startBin..<endBin {
+      for bin in bins {
         if magnitudes[bin] > peakMag { peakMag = magnitudes[bin] }
       }
 

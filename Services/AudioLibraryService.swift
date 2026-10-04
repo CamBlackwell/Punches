@@ -84,10 +84,13 @@ final class AudioLibraryService {
 
         saveAudioFiles()
 
+        // Explicit `_ =`: the bytes are already gone from the library's point of
+        // view, so a failure here is not worth interrupting the user for — the
+        // reconciler picks up anything left on the next pass.
         if let reconciler = manager.libraryReconciler {
-            try? reconciler.moveToTrash(audioFile.fileURL, reason: "deleted")
+            _ = try? reconciler.moveToTrash(audioFile.fileURL, reason: "deleted")
         } else {
-            try? FileManager.default.removeItem(at: audioFile.fileURL)
+            _ = try? FileManager.default.removeItem(at: audioFile.fileURL)
         }
 
         manager.artworkService.deleteArtworkIfUnused(audioFile.artworkImageName)

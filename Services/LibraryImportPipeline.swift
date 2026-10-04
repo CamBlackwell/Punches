@@ -341,7 +341,7 @@ final class LibraryImportPipeline {
             // any, goes to Trash rather than being unlinked — the old code
             // deleted it outright on validation failure.
             if let stagedURL, FileManager.default.fileExists(atPath: stagedURL.path) {
-                try? environment.reconciler?.moveToTrash(stagedURL, reason: "rejected")
+                discard(stagedURL, reason: "rejected")
             }
 
             Self.logger.error(
@@ -407,7 +407,7 @@ final class LibraryImportPipeline {
 
             // Move, don't copy: the bytes are already inside our container.
             if FileManager.default.fileExists(atPath: staged.path) {
-                try? environment.reconciler?.moveToTrash(staged, reason: "reclaimed-inbound")
+                discard(staged, reason: "reclaimed-inbound")
             }
             try FileManager.default.moveItem(at: inbound.url, to: staged)
 
@@ -475,7 +475,7 @@ final class LibraryImportPipeline {
             )
 
             if FileManager.default.fileExists(atPath: staged.path) {
-                try? environment.reconciler?.moveToTrash(staged, reason: "rejected")
+                discard(staged, reason: "rejected")
             }
 
             Self.logger.error("Inbound import failed [\(failure.rawValue, privacy: .public)]")
@@ -490,6 +490,24 @@ final class LibraryImportPipeline {
     }
 
     // MARK: - Stages
+
+    /// Moves a staged or superseded file to Trash, if we can.
+    ///
+    /// Every caller here is on a path where the bytes are already either
+    /// superseded or unwanted, so a failure is never worth propagating: the
+    /// reconciler's next pass finds whatever was left behind. The user's
+    /// original file is never one of these.
+    ///
+    /// The `_ =` and the explicit unwrap are both load-bearing. Swift warns
+    /// "result of 'try?' is unused" even when the call returns `Void`, and
+    /// `reconciler` is optional, so `try? environment.reconciler?.moveToTrash(…)`
+    /// would warn twice over — once for the discarded `Void??` and once for the
+    /// inner result. Unwrapping first and discarding explicitly leaves one
+    /// obvious statement of intent instead of five subtly-different ones.
+    private func discard(_ url: URL, reason: String) {
+        guard let reconciler = environment.reconciler else { return }
+        _ = try? reconciler.moveToTrash(url, reason: reason)
+    }
 
     /// Ensures a FileProvider (iCloud Drive) file is actually local.
     ///
@@ -540,7 +558,7 @@ final class LibraryImportPipeline {
         // place an unlink is correct.
         try? FileManager.default.removeItem(at: partial)
         if FileManager.default.fileExists(atPath: final.path) {
-            try? environment.reconciler?.moveToTrash(final, reason: "restaged")
+            discard(final, reason: "restaged")
         }
 
         try await performBlocking {
@@ -625,7 +643,7 @@ final class LibraryImportPipeline {
         let destination = environment.tracks.appendingPathComponent(staged.lastPathComponent)
 
         if FileManager.default.fileExists(atPath: destination.path) {
-            try? environment.reconciler?.moveToTrash(destination, reason: "repromoted")
+            discard(destination, reason: "repromoted")
         }
 
         try FileManager.default.moveItem(at: staged, to: destination)

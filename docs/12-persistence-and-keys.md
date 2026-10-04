@@ -190,11 +190,15 @@ Five tables, created by `LibrarySchema.version1`: `track`, `playlist`, `playlist
 
 | Call | Effect |
 |---|---|
-| `LibraryStore.exec(_:bindings:)` | `:1125` — runs any statement for its effect. The **only** write path in the layer. |
-| `LibraryStore.drain(_:onRow:)` | `:1138` — steps a prepared statement to `SQLITE_DONE`, invoking `onRow` per row. Every read and write goes through it. |
-| `LibraryStore.forEachRow(_:bindings:_:)` | `:1176` — `drain` plus a per-row closure. |
-| `LibraryStore.addMembership(playlistID:trackID:position:)` | `:1222` — the **only** writer of `playlist_member` from a single import or repair. Guarded; see below. |
-| `LibraryStore.persist(_:)` | `:521` — the one mirror operation. Writes tracks, playlists, membership and `meta`, then `prune`s anything absent. **A full mirror, not a delta.** |
+| `LibraryStore.exec(_:bindings:)` | `:1127` — runs any statement for its effect. The **only** write path in the layer. |
+| `LibraryStore.drain(_:onRow:)` | `:1140` — steps a prepared statement to `SQLITE_DONE`, invoking `onRow` per row. Every read and write goes through it. |
+| `LibraryStore.forEachRow(_:bindings:_:)` | `:1181` — `drain` plus a per-row closure. |
+| `LibraryStore.bind(_:to:)` | `:1268` — writes the binding list onto a prepared statement and **returns the first non-`SQLITE_OK` code**. `query` throws on it; see the gotcha below. |
+| `LibraryStore.query(_:bindings:_:)` | `:1157` — the only caller of `bind`. Prepares, binds, runs `body`, finalises. Every statement in the layer goes through here. |
+| `LibraryStore.addMembership(playlistID:trackID:position:)` | `:1227` — the **only** writer of `playlist_member` from a single import or repair. Guarded; see below. |
+| `LibraryStore.persist(_:)` | `:523` — the one mirror operation. Writes tracks, playlists, membership and `meta`, then `prune`s anything absent. **A full mirror, not a delta.** |
+
+> **Gotcha — a binding list is positional, and a mismatch used to be invisible.** `bindings:` maps onto `?` placeholders **in order**, one for one, so `bindings: [.text(id)]` against two placeholders binds the first and leaves the second `NULL` — and the statement still reports success. Every `sqlite3_bind_*` call returns a code saying whether it did what it was asked, and all of them were being discarded. A write with a mismatched list therefore landed with a wrong value in it and reported success: the same silent-no-op shape as [C15](14-known-issues.md#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran), one layer earlier in the same write. `bind` now returns the first non-`SQLITE_OK` code and `query` throws `.bindFailed`, whose message is SQLite's own (`column index out of range` for a surplus binding). **The binding list must stay 1:1 with the placeholders** — not as style, but because the mismatch is now a thrown error rather than a corrupt row, and adding a column to an `INSERT` without adding its binding will now fail loudly at runtime instead of quietly writing `NULL`.
 
 > **Gotcha — `sqlite3_prepare_v2` only compiles.** A statement that is prepared and finalised without ever being stepped executes *nothing*, with no error. `exec` is exactly that shape; it now drains through `drain`, and the two must not be split again. This was a real Critical defect for one commit — [14 · C15](14-known-issues.md#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran) — and it compiled and launched cleanly throughout.
 

@@ -162,7 +162,20 @@ class AudioManager: NSObject, ObservableObject {
             await MainActor.run { self.lastImportReport = report }
         }
 
-        libraryReconciler?.reconcile()
+        // The reconciler repairs membership and reclaims untracked bytes, and the
+        // result used to be discarded — so the one launch that quietly deleted a
+        // file, or dropped a track out of a playlist, left no trace at all. It is
+        // not user-visible, but it should not be invisible either.
+        if let summary = libraryReconciler?.reconcile(), !summary.isQuiet {
+            LibraryEnvironment.log.notice(
+                """
+                Reconciled library: \(summary.restoredMembership) membership row(s) restored, \
+                \(summary.markedMissing.count) track(s) marked missing, \
+                \(summary.movedToTrash.count) untracked file(s) reclaimed, \
+                \(summary.leftAlone.count) left alone
+                """
+            )
+        }
 
         await MainActor.run {
             self.displayedSongs = self.sortedAudioFiles

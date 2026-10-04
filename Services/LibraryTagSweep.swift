@@ -57,6 +57,9 @@ struct LibraryTagSweep {
 
     /// Sweeps until there is nothing left, or until `budget` files have been read.
     ///
+    /// - Parameter budget: How many files to read this pass. A non-positive value
+    ///   reads nothing and is treated as "nothing to do this launch", not as an
+    ///   error — the next launch picks the work up again.
     /// - Returns: How many rows were updated. Zero means the library is already
     ///   current, which is the common case after the first launch.
     @discardableResult
@@ -71,7 +74,11 @@ struct LibraryTagSweep {
 
         guard !pending.isEmpty else { return 0 }
 
-        let limit = min(pending.count, budget)
+        // Clamped, not just minimised: `budget` is a parameter with no lower
+        // bound, and a negative one would build an inverted range and trap with
+        // `Range requires lowerBound <= upperBound`.
+        let limit = max(0, min(pending.count, budget))
+        guard limit > 0 else { return 0 }
         Self.logger.notice("Reading tags for \(limit) of \(pending.count) track(s)")
 
         var updated = 0

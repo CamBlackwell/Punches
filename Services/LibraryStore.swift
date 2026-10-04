@@ -156,6 +156,7 @@ enum LibraryStoreError: LocalizedError {
     case notInitialised
     case openFailed(String)
     case prepareFailed(String)
+    case bindFailed(String)
     case stepFailed(String)
     case corrupt(String)
 
@@ -164,6 +165,7 @@ enum LibraryStoreError: LocalizedError {
         case .notInitialised: return "The library store is not open."
         case .openFailed(let m): return "Could not open the library database: \(m)"
         case .prepareFailed(let m): return "Could not prepare a library query: \(m)"
+        case .bindFailed(let m): return "Could not bind a value to a library query: \(m)"
         case .stepFailed(let m): return "A library query failed: \(m)"
         case .corrupt(let m): return "The library database is damaged: \(m)"
         }
@@ -1167,7 +1169,10 @@ final class LibraryStore: @unchecked Sendable {
         }
         defer { sqlite3_finalize(stmt) }
 
-        try Self.bind(bindings, to: stmt)
+        let bindCode = Self.bind(bindings, to: stmt)
+        guard bindCode == SQLITE_OK else {
+            throw LibraryStoreError.bindFailed(errorMessage(handle))
+        }
 
         return try body(stmt)
     }
@@ -1250,26 +1255,39 @@ final class LibraryStore: @unchecked Sendable {
 
     // MARK: Binding / decoding
 
-    private static func bind(_ bindings: [Binding], to stmt: OpaquePointer) throws {
+    /// Binds `bindings` to `stmt`, returning the first non-`SQLITE_OK` code.
+    ///
+    /// Every `sqlite3_bind_*` call reports failure, and every one of them used to
+    /// have that report thrown away: a bind that failed left the parameter NULL,
+    /// the statement still "succeeded", and the write landed with the wrong value
+    /// in it. That is the same silent-no-op shape as C15, one layer earlier in the
+    /// same write. The codes are cheap to check, so `query` checks them.
+    ///
+    /// - Returns: `SQLITE_OK` if every binding was written, otherwise the code
+    ///   from the first binding that failed.
+    private static func bind(_ bindings: [Binding], to stmt: OpaquePointer) -> Int32 {
         for (offset, binding) in bindings.enumerated() {
             let index = Int32(offset + 1)
+            let code: Int32
             switch binding {
             case .text(let value):
-                value.withCString {
+                code = value.withCString {
                     sqlite3_bind_text(stmt, index, $0, -1, transient)
                 }
             case .blob(let value):
-                value.withUnsafeBytes { raw in
+                code = value.withUnsafeBytes { raw in
                     sqlite3_bind_blob(stmt, index, raw.baseAddress, Int32(value.count), transient)
                 }
             case .int(let value):
-                sqlite3_bind_int64(stmt, index, value)
+                code = sqlite3_bind_int64(stmt, index, value)
             case .double(let value):
-                sqlite3_bind_double(stmt, index, value)
+                code = sqlite3_bind_double(stmt, index, value)
             case .null:
-                sqlite3_bind_null(stmt, index)
+                code = sqlite3_bind_null(stmt, index)
             }
+            if code != SQLITE_OK { return code }
         }
+        return SQLITE_OK
     }
 
     private static func text(_ stmt: OpaquePointer, _ index: Int32) -> String? {

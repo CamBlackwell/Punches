@@ -10,6 +10,8 @@ A severity-ranked register of every defect, dead path, and documentation error f
 >
 > **The pattern across all four.** Each defect blocked the import at a *later* step than the last, so each fix exposed the next one and none of them could have been found by reading the code alone. Three independent breakages sat between a working app and a working import. That is an argument for treating "the first end-to-end import" as a thing worth verifying directly, and an argument against assuming a pipeline stage is exercised because the code above it returns.
 
+> **A fifth follow-up commit, on a different subsystem.** [C18](#c18-the-q3-spectrum-trapped-on-any-audio-session-at-or-below-40-khz-killing-the-app-on-a-route-change) is *not* part of that chain — it is in the spectrum renderer, and nothing about it is related to importing. It is worth calling out anyway for two reasons. It was reported as `Fatal error: Range requires lowerBound <= upperBound` attributed to `AudioLibraryService.swift`, a file with no range construction in it and no line number to go on, so the only way to find it was to enumerate every `..<` in the app; and it could not have been found by launching the app, because it needs the audio session to actually drop to 32 kHz, which only happens on a route change. A crash that a launch-and-look cycle cannot reproduce is a different class of risk from one that fails on first run, and it is also a reminder that the reported file in a crash report is a claim, not evidence. The same commit brought [A14](#a14-test-support-code-ships-inside-the-app-target) and [G9](#g9-the-tunnel-shader-ignored-themetunnelcolor-entirely), both found by reading the code the crash hunt and the warning cleanup pointed at rather than by looking for them.
+
 > **About the Exploration notes.** Entries carry an **Exploration notes** block recording the hypotheses that have already been ruled out, the instrumentation that would confirm or refute the rest, and any trap for the next person to look. This exists so that a hypothesis is not re-investigated from scratch, and so that a *failed* approach is as visible as a successful one. If you test one of these, update the block — including when the test shows the entry is **wrong**. One entry has already been corrected that way: [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue) previously claimed a variable had no readers anywhere, which was false. All Critical and High entries carry the block; the Medium and Low set does not yet, and should be filled in as each is picked up.
 
 ---
@@ -27,11 +29,11 @@ A severity-ranked register of every defect, dead path, and documentation error f
 
 | Severity | Count |
 |---|---|
-| Critical | 16 |
+| Critical | 17 |
 | High | 32 |
-| Medium | 28 |
+| Medium | 31 |
 | Low | 18 |
-| **Total** | **94** |
+| **Total** | **98** |
 
 The table counts entries, not distinct defects: [A3](#a3-app-group-entitlement-is-empty) and [B1](#b1-app-group-entitlement-is-empty) are the same root cause documented from the build side and the import side, and several entries share a single fix.
 
@@ -50,6 +52,8 @@ User-reported symptoms and the entries that explain them. A single report can ha
 | *"it now pops up with an error when importing, however all audio types come up with the message that they are unsupported format"* | [C16](#c16-a-file-with-no-extension-could-never-be-imported-and-every-failure-was-reported-as-unsupported-format) | C16 is both causes at once: a staged file that lost its extension so `AVURLAsset` could not open it, and a `classify` that reported every error as an unsupported codec. "All audio types" is the tell — a real codec limit is format-specific, a filename problem is not. |
 | *"the library database could not be written. This is not a problem with the file. A library query failed: FOREIGN KEY constraint failed"* | [C17](#c17-every-import-failed-with-a-foreign-key-violation-discarding-the-track-it-had-just-committed) (fixed) | C17 alone. The message blamed the database and the file, and both were right to be blamed for the wrong reason: the membership row could not be written because the master playlist did not exist, and `INSERT OR IGNORE` does not suppress a foreign-key violation, so the whole commit rolled back. Every file, every time, including on a brand-new install. It only became visible once [C16](#c16-a-file-with-no-extension-could-never-be-imported-and-every-failure-was-reported-as-unsupported-format) stopped throwing first — `commitImport` had never run before that. |
 | *"When I add a song it is not shown on the songs list view after I add it."* | [C15](#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran) · [C13](#c13-the-app-opens-on-the-oldest-import-not-the-top-of-the-list) | C15 was the whole cause: no write in the library layer had ever executed, so the import aborted before it could refresh `displayedSongs`. Fixed. C13 carries a second, independent path to the same symptom — a `displayedSongs` refresh trapped inside the master-playlist guard — and is still open. |
+| *"Thread 1: Fatal error: Range requires lowerBound <= upperBound."* | [C18](#c18-the-q3-spectrum-trapped-on-any-audio-session-at-or-below-40-khz-killing-the-app-on-a-route-change) (fixed) · [A14](#a14-test-support-code-ships-inside-the-app-target) (fixed) | C18 alone, and **not** in the file the report named. The report attributed it to `AudioLibraryService.swift`, which contains no range construction and calls nothing that does; it also carried no line number, and no `.ips` exists on the machine or in either Simulator. The trap was in the Q3 spectrum band loop, which built an inverted bin range whenever the audio session ran at or below 40 kHz — so it fired on a route change, not at launch, and looked unrelated to whatever else was being worked on. A14 is not a cause of the crash but shares its arithmetic; it is listed because it is where the same un-clamped code was found a second time. |
+| *"The tunnel background colour setting does nothing."* | [G9](#g9-the-tunnel-shader-ignored-themetunnelcolor-entirely) (fixed) · [F13](#f13-fogcolor-fogspeed-tunnelcolor-have-no-controls) | G9 was the value never reaching the shader at all; F13, still open, is that there is no per-setting control, so `tunnelColor` can only be changed by picking a preset. Fixing G9 makes the setting do something; picking it still requires a preset. |
 
 ---
 
@@ -190,6 +194,27 @@ App: `1` (iPhone only, `:589`, `:628`). Tests: `"1,2"` (`:649`). Either the app 
 **Low.**
 
 `Package.resolved` pins `controls` 1.1.4 but `packageReferences` declares only AudioKit and AudioKitUI (`:346-349`). Harmless leftover.
+
+### A14 Test-support code ships inside the app target
+
+**Medium — fixed.**
+
+`AudioMeters/` is a `PBXFileSystemSynchronizedRootGroup` with **no** exception set, so every file in it compiles into the shipping app. That includes `UnifiedAudioAnalyser+Testing.swift`, whose own header says *"None of these methods should be called from production code paths."* It contributes three `internal` test entry points to the app binary, one of which carries a `precondition` that traps:
+
+```swift
+// AudioMeters/UnifiedAudioAnalyser+Testing.swift:25
+precondition(samples.count == fftSize, "samples must have exactly fftSize elements")
+```
+
+Its band loop also carried the unclamped bin arithmetic from [C18](#c18-the-q3-spectrum-trapped-on-any-audio-session-at-or-below-40-khz-killing-the-app-on-a-route-change), now sharing the same `binRange` helper as production.
+
+This is the mirror image of [A2](#a2-both-test-targets-are-empty). `Tests/` has exception sets for **both** the app and `Punches3Tests` targets (`:62-77`), so the two test files are excluded from the test target as well as the app — which is exactly why both bundles are empty. `AudioMeters/` has no such set, so its test file is in the app and out of the tests: shipped to users, reachable by nothing.
+
+**Fix.** Both copies of the band arithmetic now call one `binRange` helper, so the test copy cannot hold a different (or unsafely clamped) version of the maths. Two follow-ups are available but were not taken here, because both are structural: add an exception set excluding `+Testing.swift` from the app target, and/or rename it so its role is obvious at the call site.
+
+**Exploration notes.**
+- **Ruled out:** "the test file is dead code the optimiser removes." `internal` members of a compiled-in class are emitted regardless of whether anything calls them; the `precondition` is a real trap on any path that reaches it.
+- **Trap:** Xcode's synchronized-folder targets invert the usual intuition. A folder added to a target includes *everything* in it; `membershipExceptions` is the exclusion list, not an inclusion list. Reading those lists as inclusions inverts every conclusion about what is in the app.
 
 ---
 
@@ -691,7 +716,7 @@ The middle column of that table is the finding: on a **brand-new install there i
 - **`loadOrCreateMasterPlaylist`** saves whenever it mints a master. Without this layer the first one would let the import *report success* while the track stayed unreachable from `sortedAudioFiles`, which is driven entirely by master membership — the silent failure the layer above is silent about.
 - **`persist` retracts the master pointer** when the row it names did not survive, and **`loadMasterPlaylistID` joins `playlist`** so it never returns an id with nothing behind it. The retraction asks the database rather than the snapshot, because `prune` refuses to delete anything when handed an empty projection, so a row can legitimately outlive a snapshot that never mentioned it.
 
-**Not data loss.** The user's original file is never touched, and on failure the staged copy is moved to Trash rather than unlinked (`LibraryImportPipeline.swift:339`). The severity is Critical because the app's primary function was 100% broken with no user-side recovery — the same ground C15 and C16 are rated on.
+**Not data loss.** The user's original file is never touched, and on failure the staged copy is moved to Trash rather than unlinked (`LibraryImportPipeline.swift:340-344`, via the `discard` helper). The severity is Critical because the app's primary function was 100% broken with no user-side recovery — the same ground C15 and C16 are rated on.
 
 **Verified.** 34 assertions compiled from the real `LibraryStore`: the healthy path (single membership row, positions `0,1`, pointer intact), the brand-new-install first import, three consecutive imports, a pruned master, `prune`'s empty-projection refusal *not* retracting a live pointer, `ensureMembership` against both a dangling and a live playlist, and — the assertion that catches the silent failure — that every committed track is reachable from the master after the `projectOntoUI` save. Pre-fix, three of these states threw `FOREIGN KEY constraint failed` and lost the track row. The 42 metadata-reader and 50 pipeline assertions still pass.
 
@@ -701,6 +726,72 @@ The middle column of that table is the finding: on a **brand-new install there i
 - **Ruled out:** "the failure is in the track table." `track` is not a child table and carries no foreign keys. `playlist_member` is the only place a violation can originate.
 - **Trap:** the transaction hides the damage. The rollback discards a correct `track` row along with the bad membership row, so the database looks unchanged and the user sees only a database error. Any future secondary write inside a commit transaction gets this same veto unless it is individually guarded.
 - **Trap:** a fix that guards the insert but not the master's existence converts a loud failure into a **silent** one — the import reports success and the song never appears, because `sortedAudioFiles` is driven by master membership. Any fix here needs both halves.
+
+---
+
+### C18 The Q3 spectrum trapped on any audio session at or below 40 kHz, killing the app on a route change
+
+**Critical — fixed.**
+
+> **User report:** *"Thread 1: Fatal error: Range requires lowerBound <= upperBound"*, reported with no line number and attributed to `Services/AudioLibraryService.swift`.
+
+**The attribution is wrong; the crash is real.** `AudioLibraryService.swift` contains no range construction at all, and neither does anything it calls — `loadTracks`, `persist`, `lossyDecode` and `sortedAudioFiles` are all range-free. There is also no `.ips` anywhere on the machine or in either Simulator (`DiagnosticLogs/` is empty), which is what a trap caught by an attached debugger looks like rather than a logged crash. Every `..<` in the app was enumerated to settle it:
+
+| Location | Verdict |
+|---|---|
+| `View/` | zero range constructions in the entire directory |
+| `Services/AudioContainer.swift` | literal ranges, guarded by `range.upperBound <= header.count` |
+| `Services/LibraryImportPipeline.swift:189` | `separator` comes from `name.range(of:)` on the same string, so indices are compatible |
+| `Services/LibraryTagSweep.swift:85` | safe at the only call site's budget, but the parameter had no lower bound — clamped in the same pass |
+| `AudioMeters/goniometerView.swift:488` | `2..<(a.count - 2)` is guarded by `guard a.count > 4` |
+| `AudioMeters/UnifiedAudioAnalyser.swift:500` | properly clamped |
+| **`AudioMeters/UnifiedAudioAnalyser.swift:649`** | **not clamped — this one** |
+| `Tests/` | 11 ranges, but both files are excluded from *both* targets, so they are never compiled |
+
+**The mechanism.** The Q3 band loop mapped each log-spaced band edge onto an FFT bin range:
+
+```metal
+// AudioMeters/UnifiedAudioAnalyser.swift:643, before the fix
+let startBin = max(0, Int((loFreq / nyquist) * Float(halfSize)))
+let endBin = min(halfSize, max(startBin + 1, Int((hiFreq / nyquist) * Float(halfSize))))
+for bin in startBin..<endBin {
+```
+
+`endBin = min(halfSize, max(startBin + 1, …))` guarantees `endBin > startBin` **only while `startBin < halfSize`**. Once `startBin >= halfSize` the outer `min` clamps `endBin` down to `halfSize`, which is `<= startBin`, and constructing the range traps.
+
+`startBin >= halfSize` means `loFreq >= nyquist`. Band edges are log-interpolated from 20 Hz to **20 kHz** (`:628-629`), while `nyquist` came from `sampleRate`, which `:332` re-reads from `mixer.outputFormat(forBus: 0)` on **every tap install** — so it tracks the live route, not the 44100 default:
+
+| Output rate | nyquist | Result |
+|---|---|---|
+| 44100 / 48000 | 22050 / 24000 | safe |
+| **24000** | 12000 | **traps** |
+| **32000** (Bluetooth A2DP) | 16000 | **traps** |
+| 22050 / 16000 | 11025 / 8000 | **traps** |
+
+Any session at or below 40 kHz traps on the upper bands. The trigger is a **route change**, not launch — which is exactly why it looked unrelated to the library work that was happening at the time.
+
+**The clincher.** The sibling Q1 loop computes the identical bins at `:483-484` and clamps them properly at `:494-495` (`clampedStart`/`clampedEnd`, plus a `binsInRange < minBinsPerBand` widening step at `:487-491`), so it iterates `clampedStart..<clampedEnd` at `:500`. Q3 was written without the clamp its sibling already had.
+
+**Measured, before the fix.** A harness compiled from the real `UnifiedAudioAnalyser.swift` (against a stand-in for the one AudioKit protocol it uses), sweeping the real band edges:
+
+| Session rate | Inverted bands, old expression | After the fix |
+|---|---|---|
+| 44100 / 48000 / 96000 | 0 | 0 |
+| 24000 | 9 | 0 |
+| **32000** | **4** | **0** |
+| 22050 | 11 | 0 |
+| 16000 | 16 | 0 |
+| 11025 / 8000 | 23 / 29 | 0 |
+
+**348 inverted ranges across the sweep, 0 after.** The harness also confirms the fix is *behaviour-neutral where it already worked*: at 44100, 48000 and 96000 Hz all 128 bands come back bit-identical to the old expression. The old oracle trapped on its own first inverted range, which is the bug reproducing verbatim — so the harness counts inverted bounds rather than constructing them.
+
+**Fix.** One shared `binRange(from:to:binCount:nyquist:)` helper, used by both the production loop and `+Testing.swift`, guaranteeing `0 <= lowerBound < upperBound <= binCount`. Clamping the `Float` **before** the `Int(...)` conversion matters as much as clamping the result: a low `nyquist` drives the ratio far past `Float(halfSize)`, and an unclamped conversion would trap on `Int` overflow with a *different* message. A single helper rather than two edits, so the two copies cannot drift — the same reasoning as C17's `addMembership`.
+
+**Exploration notes.**
+- **Ruled out:** the library layer. `git diff` against C17 touches no library code, and no range construction exists on the `AudioLibraryService` path.
+- **Ruled out:** an `Int` overflow as the reported message. Real, but it is a *second* trap at the same line, not the one reported; the reported text is the range precondition.
+- **Trap:** the crash is attributed to whatever file the symbolicated frame resolves to, which need not be the file with the bug. A missing line number plus a file with no range construction is the signal to sweep the whole app rather than to trust the attribution.
+- **Trap:** a route change is invisible in a launch-and-test cycle. This cannot be reproduced by starting the app on the simulator's default output; it needs the session rate to actually drop below 40 kHz.
 
 ---
 
@@ -882,6 +973,33 @@ The model could not represent metadata even if some were available. `AudioFile` 
 - **Trap:** `AVMetadataItem` vends values lazily, and its synchronous accessors block the calling thread. The reader loads `stringValue` / `numberValue` / `dataValue` explicitly, and independently, so one unreadable frame costs that frame rather than the file's tags.
 - **Confirmed by the album work:** the [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see) hazard was not theoretical. `Playlist` had already needed a hand-written `init(from:)` with `decodeIfPresent` defaults to survive an `isAlbum` addition; `AudioFile` got the same treatment in the same commit as the metadata.
 - **Non-goal:** re-reading tags on every launch would open every file in the library, every time. Hence `tags_read` — a file with no tags at all is stamped too, so it is not re-opened forever.
+
+### D15 Roughly one line reference in seven no longer points where it claims to
+
+**Medium.**
+
+The register leans on `file.swift:NNN` as its primary evidence, and that evidence has drifted. Resolving all 463 `file:line` references across `docs/*.md` against the current tree:
+
+| Outcome | Count |
+|---|---|
+| Resolve to a real line of code | 396 |
+| **Land on a blank line, or past the end of the file** | **25** |
+| **Name a file that no longer exists** | **42** |
+
+Two distinct causes, and only one of them is fixable by editing numbers.
+
+**Deleted files (42).** `AudioImportService.swift` was removed in the `laptop` merge, and 20 references still cite it — `docs/01` ×3, `docs/08` ×1, `docs/09` ×5, `docs/12` ×3, and this register ×10 including [B7](#b7-processpendingimports-deletes-the-whole-directory) and [C2](#c2-cleanuporphanedfiles-deletes-untracked-files). Where the surrounding entry is marked **historical** this is defensible: those describe a pre-merge state, and `:171` genuinely was `removeItem(at: pendingDirectory)` then. Where the entry is *not* marked historical it is actively misleading, because it cites a line of code that no longer exists as if a reader could go and check it.
+
+**Blank-line references (25).** These are worse, because the file is still there — a reader follows the pointer, lands on nothing, and has no way to tell whether the claim is false or merely misnumbered. `audio_manager.swift` accounts for six (`:7`, `:95` ×2, `:261`, `:265`, `:145`), `PlaylistService.swift` for five, and `UnifiedAudioAnalyser.swift`, `content_view.swift` and `PlaylisList_view.swift` for the rest.
+
+**Why it went unnoticed.** Every one of these was true when written. Nothing in the build checks a prose line reference, and a reference that silently rots produces no failure — it just quietly stops being evidence. The drift is one-sided: a line reference can only ever become *less* accurate as code is inserted above it, so the count is a lower bound that grows with every edit.
+
+**Not fixed here.** Correcting 67 references is a documentation pass over eight files, and the 42 that name deleted files need a judgement call each — rewrite against the replacement code, or mark the containing entry historical. That is not a change to make opportunistically inside a crash fix, where it would be unreviewable. Two mechanical rules would stop it recurring, and neither is urgent: prefer naming the **symbol** over the line (`loadMasterPlaylistID`, which survives edits) and keep the line as a convenience; and when a file is deleted, sweep its references in the same commit.
+
+**Exploration notes.**
+- **Ruled out:** "the register was written against a different tree and never re-checked." That is what happened, and it is the point — but the fix is not re-checking once. It is changing what the references point at.
+- **Trap:** a *resolvable* reference is not a *correct* one. 396 references land on real code and were not audited for whether that code is the thing being claimed. The 25 blanks are the detectable subset of the problem, not its size.
+- **Trap:** this register's own citations are not exempt. Writing [C18](#c18-the-q3-spectrum-trapped-on-any-audio-session-at-or-below-40-khz-killing-the-app-on-a-route-change) meant adding six more references, and three were wrong on first draft — caught only because every one was resolved against the real file before committing.
 
 ---
 
@@ -1336,6 +1454,26 @@ Switching to `.Artwork` does not detach the tap, stop the 60 Hz timer, or free t
 
 **Fix:** on mode change to `.Artwork`, invalidate the timer and remove the tap; re-attach on the way back.
 
+### G9 The tunnel shader ignored `theme.tunnelColor` entirely
+
+**Medium — fixed.**
+
+`theme.tunnelColor` is a fully wired user setting — `@Published`, persisted under `theme.tunnelColor`, default `#54a8ff`, set by every preset (`View/setting_View.swift:179, 972-973`) — and `View/ShaderEffects.swift:184` passes it as `.color(theme.tunnelColor)`. The shader then discarded it. Commit `b095d68` ("shader tweaks, no major changes yet tho") commented out the only line that consumed it:
+
+```metal
+// View/TunnelShader.metal:141, before the fix
+//col *= tunnelPalette(rf.y, e, e, e, 0.35h * tint);
+```
+
+That left `tunnelPalette` with no callers, plus `e` and `tint` unused — three dead-code warnings, and a colour setting that visibly did nothing. It stayed invisible because `tintColor` was still *referenced* by the dead `tint` local, so the compiler had nothing to say about the parameter. Distinct from [F13](#f13-fogcolor-fogspeed-tunnelcolor-have-no-controls), which is about there being no per-setting control in the UI; this was the value never reaching the shader at all.
+
+**Fix.** The palette line is restored, which clears all three warnings and re-connects the setting. **The visual result has not been reviewed** — restoring it changes how the tunnel looks, and that check needs a human eye. Verified only that the shader compiles and `tunnelPalette` is present in the built `default.metallib`.
+
+**Exploration notes.**
+- **Ruled out:** "the shader never received it." `.color(theme.tunnelColor)` is passed at the call site and the parameter is declared; the value arrived and was dropped one line later.
+- **Trap:** a dead local that *reads* a parameter keeps the compiler silent about that parameter. "No warnings for this setting" is not evidence the setting works.
+- **To confirm:** switch the tunnel background colour in Settings and restart the visualiser. Before the fix nothing changed; after it, the tint should shift.
+
 ---
 
 ## Recommended fix order
@@ -1346,6 +1484,8 @@ Switching to `.Artwork` does not detach the tap, stop the 60 Hz timer, or free t
 2. [A2](#a2-both-test-targets-are-empty) test membership, so [G3](#g3-three-incompatible-frequencyband-conventions) can be verified against `Q3analysertests.swift` — **still open**
 3. [A3](#a3-app-group-entitlement-is-empty) entitlements — still blocking the import/share path, and still the prerequisite for all of section B. Note `LibraryEnvironment` now degrades to an app-private `Documents/Punches/` and logs a `fault` rather than silently falling back to the Documents root.
 4. [E2](#e2-rt-closure-calls-a-main-actor-method) — nominal isolation, not a compile error; fix with [E1](#e1-rt-thread-allocates-19-mbs) in Phase 3
+
+> **Two more Phase 1 items, fixed and deliberately not renumbered** — inserting a number here would cascade through every item to 21. **~~[C18](#c18-the-q3-spectrum-trapped-on-any-audio-session-at-or-below-40-khz-killing-the-app-on-a-route-change)~~ — fixed.** A hard crash, so it belongs in this phase by severity, but it is not a build defect: any audio session at or below 40 kHz trapped the Q3 spectrum band loop on an inverted range. It could not be found by launching the app, because it needs the session rate to actually drop — a route change, not a cold start. **~~[A14](#a14-test-support-code-ships-inside-the-app-target)~~ — fixed.** Its structural twin: `AudioMeters/` has no membership exception set, so `UnifiedAudioAnalyser+Testing.swift` compiled into the shipping app, contributing a `precondition` and a second copy of the band arithmetic. Both were found by reading code the crash hunt and a warning cleanup pointed at, not by looking for them.
 
 > **The two items removed from this phase were both wrong.** [G1](#g1-missing-grainoverlay-shader-and-bluenoise64-asset) and [A4](#a4-grainoverlay-is-missing-and-tunneleffect-is-mis-called) were expected to surface as hard compile errors once membership was repaired. They did not surface as *Swift* errors — `SwiftUI.ShaderLibrary` resolves members through `subscript(dynamicMember: String) -> ShaderFunction`, so `ShaderLibrary.grainOverlay(...)` type-checks whether or not `grainOverlay` exists. But they **did** surface as hard **Metal** errors the moment `View/` was bound, because the `.metal` files are compiled rather than resolved dynamically. Both are now fixed; see the `laptop` follow-up commit.
 
@@ -1367,7 +1507,7 @@ Switching to `.Artwork` does not detach the tap, stop the 60 Hz timer, or free t
 12. [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block) (move two lines out of a `do` block) · [E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing) (update now-playing info in two branches)
 13. [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) — pick one advance mechanism, clear `onPlaybackFinished` on stop
 14. [B4](#b4-multi-file-import-silently-takes-the-first-file) · [B5](#b5-import-errors-are-completely-invisible) · [B9](#b9-playlist-detail-share-hands-out-the-live-file)
-15. [F1](#f1-appearancemode-never-reaches-the-swiftui-environment) · [F3](#f3-water-tunnel-and-smoke-are-mutually-exclusive-by-construction)
+15. [F1](#f1-appearancemode-never-reaches-the-swiftui-environment) · [F3](#f3-water-tunnel-and-smoke-are-mutually-exclusive-by-construction) · ~~[G9](#g9-the-tunnel-shader-ignored-themetunnelcolor-entirely)~~ — **fixed**; `theme.tunnelColor` reaches the shader again. **Needs a visual check before release**: restoring the palette line changes how the tunnel looks, and that was verified only by confirming the shader compiles and `tunnelPalette` is present in the built `default.metallib`. [F13](#f13-fogcolor-fogspeed-tunnelcolor-have-no-controls) remains open.
 16. ~~[D14](#d14-no-metadata-is-read-anywhere-the-title-is-the-filename)~~ — **done.** Shipped after C12, in the same change as the `AudioFile` decoder that C12 made possible.
 
 **Phase 5 — correctness and cost.**
@@ -1378,8 +1518,9 @@ Switching to `.Artwork` does not detach the tap, stop the 60 Hz timer, or free t
 
 **Phase 6 — cleanup.**
 
-20. Delete [D5](#d5-spectrumview-has-zero-call-sites), [D8](#d8-the-32-band-analyser-output-is-unused), [D9](#d9-commented-out-visualisation-modes), [B11](#b11-contentviewshareurl-is-dead-code), [A8](#a8-workspace-file-is-copied-into-the-app-bundle), the dead `@State volume`, the `AVAudioPlayerDelegate` conformance on `AudioManager` (`audio_manager.swift:270-278`, unreachable — see [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song)), and the `#if DEBUG` timing wrapper's per-callback syscall.
+20. Delete [D5](#d5-spectrumview-has-zero-call-sites), [D8](#d8-the-32-band-analyser-output-is-unused), [D9](#d9-commented-out-visualisation-modes), [B11](#b11-contentviewshareurl-is-dead-code), [A8](#a8-workspace-file-is-copied-into-the-app-bundle), the dead `@State volume`, the `AVAudioPlayerDelegate` conformance on `AudioManager` (unreachable — see [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song)), and the `#if DEBUG` timing wrapper's per-callback syscall.
 21. Fix [D10](#d10-the-root-readmemd-requirements-are-wrong-by-a-decade) — the root README actively misleads anyone trying to build this.
+22. [D15](#d15-roughly-one-line-reference-in-seven-no-longer-points-where-it-claims-to) — 67 dead `file:line` references across `docs/`, 20 of them naming a file deleted in the `laptop` merge. Worth doing before the suite is trusted as evidence, and cheapest done by switching to symbol names rather than a sweep of 67 numbers.
 
 ---
 
