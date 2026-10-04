@@ -12,6 +12,10 @@ A severity-ranked register of every defect, dead path, and documentation error f
 
 > **A fifth follow-up commit, on a different subsystem.** [C18](#c18-the-q3-spectrum-trapped-on-any-audio-session-at-or-below-40-khz-killing-the-app-on-a-route-change) is *not* part of that chain — it is in the spectrum renderer, and nothing about it is related to importing. It is worth calling out anyway for two reasons. It was reported as `Fatal error: Range requires lowerBound <= upperBound` attributed to `AudioLibraryService.swift`, a file with no range construction in it and no line number to go on, so the only way to find it was to enumerate every `..<` in the app; and it could not have been found by launching the app, because it needs the audio session to actually drop to 32 kHz, which only happens on a route change. A crash that a launch-and-look cycle cannot reproduce is a different class of risk from one that fails on first run, and it is also a reminder that the reported file in a crash report is a claim, not evidence. The same commit brought [A14](#a14-test-support-code-ships-inside-the-app-target) and [G9](#g9-the-tunnel-shader-ignored-themetunnelcolor-entirely), both found by reading the code the crash hunt and the warning cleanup pointed at rather than by looking for them.
 
+> **A sixth, from user reports rather than from reading the code.** [B14](#b14-the-multi-select-menu-offered-only-playlists-so-albums-were-unreachable), [C19](#c19-adding-n-songs-to-a-collection-cost-n-full-library-mirrors), [C20](#c20-a-collection-had-nowhere-to-record-a-position-so-albums-could-not-be-rearranged) and the published half of [E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing) all came from filed issues, and all four share one shape worth recording: **each was a capability that was absent rather than a mechanism that was broken**, so none of them would have been found by testing the paths that worked. There was no way to add a selection to an album, no way to rearrange albums, and no way for the system to learn that playback had paused — in each case because the relevant list, column or call was never written, not because it had drifted. The register's earlier entries were mostly found by reading; these were found by someone using the app.
+>
+> **Two of them compounded, which is the more useful lesson.** #56 (no album target in the multi-select menu) would have been a bad experience even on its own — but with [C19](#c19-adding-n-songs-to-a-collection-cost-n-full-library-mirrors) behind it, the fix for the first would have been unusable, because the only way to add songs to a collection performed a full library mirror *per song*. Neither report mentioned the other. Two issues in the same feature area, filed by nobody who knew about the other, turned out to be one problem.
+
 > **About the Exploration notes.** Entries carry an **Exploration notes** block recording the hypotheses that have already been ruled out, the instrumentation that would confirm or refute the rest, and any trap for the next person to look. This exists so that a hypothesis is not re-investigated from scratch, and so that a *failed* approach is as visible as a successful one. If you test one of these, update the block — including when the test shows the entry is **wrong**. One entry has already been corrected that way: [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue) previously claimed a variable had no readers anywhere, which was false. All Critical and High entries carry the block; the Medium and Low set does not yet, and should be filled in as each is picked up.
 
 ---
@@ -30,10 +34,10 @@ A severity-ranked register of every defect, dead path, and documentation error f
 | Severity | Count |
 |---|---|
 | Critical | 17 |
-| High | 32 |
-| Medium | 31 |
+| High | 33 |
+| Medium | 33 |
 | Low | 18 |
-| **Total** | **98** |
+| **Total** | **101** |
 
 The table counts entries, not distinct defects: [A3](#a3-app-group-entitlement-is-empty) and [B1](#b1-app-group-entitlement-is-empty) are the same root cause documented from the build side and the import side, and several entries share a single fix.
 
@@ -43,7 +47,7 @@ User-reported symptoms and the entries that explain them. A single report can ha
 
 | Symptom (as reported) | Entries | Note |
 |---|---|---|
-| *"A call stops the music but it is still registered as playing."* | [E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing) · [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block) | E14 is the direct cause — the published now-playing rate is never rewritten, and the timer is not restarted because a call ends without `.shouldResume`. E16 is a separate aggravator: when it fires, the lock-screen controls are inert too, so the user has no remote way to recover. |
+| *"A call stops the music but it is still registered as playing."* | [E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing) (partially fixed) · [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block) | E14 is the direct cause, and its published-state half is now fixed: the `.began` handler calls `updateNowPlayingInfo()`, so the rate is rewritten to `0.0` instead of staying at `1.0`. Still open in E14: nothing restarts the timer when `.ended` arrives without `.shouldResume`, so the in-app player stays frozen until the user taps something. E16 is a separate aggravator: when it fires, the lock-screen controls are inert too, so the user has no remote way to recover. The two compose — a failed session setup removes the only workaround E14 still needs. |
 | *"There is no file permanence; files disappear after closing the app."* | [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see) · [C2](#c2-cleanuporphanedfiles-deletes-untracked-files) · [B7](#b7-processpendingimports-deletes-the-whole-directory) | C12 is the complete chain and the one to fix first: the index goes empty, then cleanup deletes the files. |
 | *"Auto next song needs some work."* | [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) · [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue) · [C4](#c4-reordering-does-not-update-playbackqueue) | E15 is the duplication and the stale-callback race. D1 is why the loop toggle appears not to work. |
 | *"Songs should default to the top of the list, not the bottom."* | [C13](#c13-the-app-opens-on-the-oldest-import-not-the-top-of-the-list) · [C14](#c14-manual-sort-order-is-silently-discarded) | The sort is correct. C13 is the unsorted `audioFiles.first` fallback used for the default selection; C14 is manual order being discarded on recompute. |
@@ -54,6 +58,9 @@ User-reported symptoms and the entries that explain them. A single report can ha
 | *"When I add a song it is not shown on the songs list view after I add it."* | [C15](#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran) · [C13](#c13-the-app-opens-on-the-oldest-import-not-the-top-of-the-list) | C15 was the whole cause: no write in the library layer had ever executed, so the import aborted before it could refresh `displayedSongs`. Fixed. C13 carries a second, independent path to the same symptom — a `displayedSongs` refresh trapped inside the master-playlist guard — and is still open. |
 | *"Thread 1: Fatal error: Range requires lowerBound <= upperBound."* | [C18](#c18-the-q3-spectrum-trapped-on-any-audio-session-at-or-below-40-khz-killing-the-app-on-a-route-change) (fixed) · [A14](#a14-test-support-code-ships-inside-the-app-target) (fixed) | C18 alone, and **not** in the file the report named. The report attributed it to `AudioLibraryService.swift`, which contains no range construction and calls nothing that does; it also carried no line number, and no `.ips` exists on the machine or in either Simulator. The trap was in the Q3 spectrum band loop, which built an inverted bin range whenever the audio session ran at or below 40 kHz — so it fired on a route change, not at launch, and looked unrelated to whatever else was being worked on. A14 is not a cause of the crash but shares its arithmetic; it is listed because it is where the same un-clamped code was found a second time. |
 | *"The tunnel background colour setting does nothing."* | [G9](#g9-the-tunnel-shader-ignored-themetunnelcolor-entirely) (fixed) · [F13](#f13-fogcolor-fogspeed-tunnelcolor-have-no-controls) | G9 was the value never reaching the shader at all; F13, still open, is that there is no per-setting control, so `tunnelColor` can only be changed by picking a preset. Fixing G9 makes the setting do something; picking it still requires a preset. |
+| *"There is no way to reorder albums."* | [C20](#c20-a-collection-had-nowhere-to-record-a-position-so-albums-could-not-be-rearranged) (fixed) | C20 alone, and it needed three missing pieces rather than one: no position column to persist an arrangement into, no edit mode on `AlbumsListView`, and no reorderable container — `LazyVGrid` has no `.onMove`. The Songs page and the album *detail* both reorder because they are `List`s, which is why the gap at page level went unnoticed. |
+| *"I select multiple songs and there is no way to add them to an album."* | [B14](#b14-the-multi-select-menu-offered-only-playlists-so-albums-were-unreachable) (fixed) · [C19](#c19-adding-n-songs-to-a-collection-cost-n-full-library-mirrors) (fixed) | B14 was the cause: the one menu that decides which collections a selection can reach listed `sortedPlaylists` and nothing else. C19 is why it would have been unusable even with the menu fixed — "add these 12 songs" performed 12 complete library mirrors, 300 row changes against 25 for one batched call. `docs/08` §9 named `MultiSelectContextMenu` as the single choke point and predicted this failure. |
+| *"There is no way to create a playlist or album from a multi-selection."* | [B14](#b14-the-multi-select-menu-offered-only-playlists-so-albums-were-unreachable) (fixed) | B14, second symptom. A user with no existing playlists had to cancel, create an empty one, reopen, and re-select — and `SongsListView` carried a duplicate of the dialog that the one reachable menu then also provided. |
 
 ---
 
@@ -374,6 +381,27 @@ Called from `AudioManager.init` and from a `scenePhase` handler in `silly_speed.
 **Low.**
 
 No iTunes/Files file sharing, and no `LSSupportsOpeningDocumentsInPlace`. Intentional or not, it means the imported `AudioFiles/` directory is only reachable by the app.
+
+---
+
+### B14 The multi-select menu offered only playlists, so albums were unreachable
+
+**High — fixed.**
+
+> **User reports:** *#56* — "When I select multiple songs there is no way to add them to an album." *#60* — "There is no way to create a playlist or album from a multi-selection."
+
+`MultiSelectContextMenu` (`View/content_view.swift:1479`) listed `sortedPlaylists` and nothing else. It is the only route from a multi-selection to a collection, so "add these 12 songs to *Journey*…" was not offered anywhere in the app — not missing from the grid, missing from the design. There was also no "new playlist from selection" at all, so a user with no existing playlists had to cancel, create an empty one, reopen, and re-select.
+
+The same omission is predicted in [08-playlists-and-library.md](08-playlists-and-library.md) §9, which names `MultiSelectContextMenu` as the one place that decides which collections a selection can reach. The docs were right; the code did not match them.
+
+**Fix.** Two `Menu` sections over `sortedPlaylists` and `sortedAlbums` — the whole collection set, so nothing has to be remembered as playlists-only when a fourth entry point appears. `libraryOrderedSelection(for:in:)` (`:1472`) picks the songs in the order the source list shows them rather than selection order, so "new playlist from selection" does not silently rearrange the songs. `createPlaylist`/`createAlbum` now return the new `Playlist` synchronously, which is what lets the caller populate it in the same turn; both had been wrapping the work in a redundant `DispatchQueue.main.async` under `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`.
+
+`SongsListView` carried its own duplicate of the "new playlist from selection" dialog, and `ContentView.applyAlerts` still had a `showingBatchAddToPlaylist` dialog plus a batch delete alert that nothing could ever present. All three deleted — unreachable code around a reachable menu is a trap for the next person reading the flow. `applyAlerts` had grown to seven `.alert` modifiers, which overtook the type-checker and is why the two new-collection alerts live in their own `applyNewFromSelectionAlerts` (`:836`).
+
+**Exploration notes.**
+- **Ruled out:** "the albums section is there but hidden." The menu was built from `sortedPlaylists` alone; there was no conditional and no empty state.
+- **Ruled out:** "some other view offers it." `MultiSelectContextMenu` is the only multi-select context menu with a collection target — `PlaylistMultiSelectContextMenu` (`PlaylisList_view.swift:292`) is scoped to one playlist's members and can only remove them.
+- **Verified with a harness:** 25/25, compiled from the real `PlaylistService`, `LibraryStore`, `LibrarySchema` and `Models` with a stand-in `AudioManager`.
 
 ---
 
@@ -795,6 +823,69 @@ Any session at or below 40 kHz traps on the upper bands. The trigger is a **rout
 
 ---
 
+### C19 Adding N songs to a collection cost N full library mirrors
+
+**Medium — fixed.**
+
+Every mutation went through `savePlaylists()`, and `LibraryStore.persist` is a **mirror**: it upserts every track, prunes the ones not in the snapshot, upserts every playlist, and prunes the rest, in one transaction. One save is therefore proportional to the whole library, not to what changed.
+
+The single-song methods (`addAudioFile(_:to:)`, `removeAudioFile(_:from:)`) each ended in a save, and every multi-select path in the app was a `for` loop over them. So "add these 12 songs to this album" performed **12 complete library mirrors** — 12 transactions, each rewriting the track table, the playlist table, the membership table and their prunes.
+
+Measured with a harness compiled from the real `PlaylistService` and `LibraryStore`, counting SQLite's own `total_changes()`: **300 row changes to add 12 songs, against 25 for the same 12 through one batch call.** The resulting databases are byte-identical. The cost is quadratic in the library and linear in the selection, so it is invisible on a small library and unusable on a large one — which is why it reads as "the app gets slow when my library is big" rather than as a bug.
+
+The same loop shape existed in five live call sites: both multi-select menus, `AddSongsToAlbumSheet`, the album-detail and playlist-detail remove paths.
+
+**Fix.** `addAudioFiles(_:to:)` and `removeAudioFiles(_:from:)` (`Services/PlaylistService.swift:353`, `:384`) accumulate membership and save **once** at the end; the single-song methods are one-line forwards to them, so there is no second code path to drift. `AudioManager` forwards both. All five loops now call the batch method.
+
+The batching is the whole fix — there is no incremental-write path, and there should not be one here. `persist`'s mirror semantics are what make a partial write impossible: either the change and its pruning land together or neither does. A faster incremental writer would trade that for throughput, and this defect was throughput spent on redundant work, not on a missing capability.
+
+**Exploration notes.**
+- **Ruled out:** "`persist` is slow." It mirrors by design, and mirroring once per *change* is the correct granularity. The defect was the number of changes, not the cost of one.
+- **Trap:** a harness that compares databases after the change must give every fixture playlist an explicit `id` **and** `dateAdded`. With generated ids the two runs cannot be compared, and the natural conclusion — "the batch path changes something" — is an artefact of the fixture.
+- **Verified with a harness:** 300 → 25 row changes for 12 songs, byte-identical databases, plus order preservation, idempotence, partially-new selections, absent songs, an unknown collection, and a reload round trip.
+
+### C20 A collection had nowhere to record a position, so albums could not be rearranged
+
+**Medium — fixed.**
+
+> **User report:** *#68* — "There is no way to reorder albums."
+
+`sortedCollections` sorted by `dateAdded` and nothing else:
+
+```swift
+// Services/PlaylistService.swift, before the fix
+private var sortedCollections: [Playlist] {
+    manager.playlists
+        .filter { $0.id != manager.masterPlaylistID }
+        .sorted { $0.dateAdded > $1.dateAdded }
+}
+```
+
+Newest-first is a reasonable default, but it is not an *ordering the user controls*, and there was no way to make it one. Three things were missing together, and all three had to be:
+
+| Missing | Why |
+|---|---|
+| a `playlist` column to hold a position | nothing to persist an arrangement *into* — `dateAdded` is not a position, and overwriting it would destroy creation order |
+| an edit mode on `AlbumsListView` | no entry point |
+| a reorderable container | `LazyVGrid` has no `.onMove`, and iOS offers no way to drag a grid cell to a new index |
+
+The Songs page reorders because it is a `List`, and the album *detail* reorders because that is a `List` too — which is exactly why the absence at page level went unnoticed.
+
+**Fix.** One nullable `playlist.sort_order` column, arriving with `tag_key` as schema v3. Reorder mode swaps the grid for a `List` and mirrors the `isReorderMode` pattern `AlbumDetailView` already uses; the grid's context menu is now shared via `albumContextMenu(_:)` so neither layout owns it. `moveCollection(in:from:to:)` renumbers the page densely in **one** save, because positions have to be gap-free or a later insert cannot land between two albums.
+
+`sortOrder` is nullable because "never arranged" and "arranged, currently first" are different states; collapsing the second onto the first would rearrange every untouched page the next time any one of them was dragged. The comparator puts unpositioned rows *after* positioned ones rather than interleaving them, because a half-arranged page is transient (one drag assigns the whole page) and interleaving would make the remainder leap around as positions fill in.
+
+**The sharp edge: reordering is disabled while a search is active.** `AlbumsListView` renders `filteredAlbums`, and `.onMove`'s indices are positions in whatever array the `ForEach` renders — so dragging the third of five search results would have renumbered three unrelated positions against the unfiltered page. `isFiltered` comes down from `ContentView`, the only place that knows about `searchText`, and `reorderableAlbums` returns `nil` while one is active. This is [C5](#c5-reorderplaylistsongs-captures-index-across-a-dispatch-hop)'s lesson one level up: the list being renumbered and the list on screen must be the same list, or there must be no list. Nothing re-derives "is this a search result" by filtering inside the view — the same string could filter to the whole page, and then the indices would be right by accident.
+
+Ordering scope is **albums only**. `moveCollection` renumbers just the page it was handed, so the Playlists tab keeps its newest-first behaviour; `ordered(_:)` slices and orders per page rather than sorting one shared array, which is what makes that separation possible.
+
+**Exploration notes.**
+- **Ruled out:** "reorder exists but does not persist." There was no position to persist and no gesture to make — this was absence, not breakage.
+- **Trap:** `[albums].move(fromOffsets:toOffset:)` on the *store's* array would be wrong. `moveCollection` takes the page as a parameter precisely so a caller cannot reorder one page using another's indices.
+- **Verified with a harness:** 52/52 from a real v2 database — schema built by the app then stamped back to `user_version = 2`, since nothing in the app can produce one any more. Confirms the upgrade reaches v3, added exactly the two columns and dropped nothing, and that three further `migrate()` calls change nothing (`ALTER TABLE ADD COLUMN` is not idempotent). Also: arranging albums leaves every playlist position nil and the Playlists page intact, a newly created album lands *after* an arranged page, both pages reload with their own arrangements, and an album outside the page handed to `moveCollection` is never touched. The view itself is SwiftUI and cannot be exercised off-device, so the index hazard is argued from the service contract and asserted at the service boundary.
+
+---
+
 ## D — Dead Code & Unfinished Features
 
 ### D1 Loop is honoured only at the end of the queue
@@ -950,7 +1041,7 @@ The model could not represent metadata even if some were available. `AudioFile` 
 | Duration | the only metadata read that existed | unchanged — but now read by content, see [C16](#c16-a-file-with-no-extension-could-never-be-imported-and-every-failure-was-reported-as-unsupported-format) |
 | Artist / album / album artist / genre / year / track / disc / comment | no field, no read, no UI | read, stored, shown under the title |
 | Embedded artwork | never extracted; only set by hand | extracted at import and by the backfill sweep, into the existing `artworkImageName` path |
-| **Album** | a user-constructed collection, not metadata | **still a user-constructed collection.** `Playlist.isAlbum` and its manually-typed `artist` are untouched |
+| **Album** | a user-constructed collection, not metadata | still a user-constructed collection — *and*, since #57, also derivable from the tags. See below |
 | Search | matches `title` only | still matches `title` only |
 
 **Fixed in five parts.**
@@ -960,7 +1051,11 @@ The model could not represent metadata even if some were available. `AudioFile` 
 - **`LibraryTagSweep`** (`Services/LibraryTagSweep.swift`) reads tags for tracks that predate metadata, once each, at launch, yielding between files.
 - **`AudioFileRow`** (`View/content_view.swift`) renders `subtitle` — artist · album · year, whatever the file carried, and nothing at all when it carried nothing.
 
-**The album feature is unchanged, deliberately.** An album *looks* like the thing audio metadata gives you, so a user reading the grid may reasonably expect the album's `artist` to be the real one from the files' tags. It is still a string the user typed into an alert. `Playlist` gained no metadata-derived fields, and `isAlbum` membership is still the order songs were added. Albums remain manual curation layered on a library that can now read its files — not a view onto the tags. Folding real album grouping in means deriving membership from the tag data, which is a separate decision about what a user-constructed album is allowed to become.
+**The album feature was left alone, on purpose — and that decision has since been made.** An album *looks* like the thing audio metadata gives you, so a user reading the grid may reasonably expect the album's `artist` to be the real one from the files' tags. It is still a string the user typed into an alert. `Playlist` gained no metadata-derived fields, and `isAlbum` membership is still the order songs were added.
+
+This entry said folding real album grouping in "means deriving membership from the tag data, which is a separate decision about what a user-constructed album is allowed to become." **That decision has now been taken, in #57** — and it was resolved by *not* turning a user-constructed album into a derived one. `TagAlbumProjector` (`Services/TagAlbumProjector.swift`) builds separate albums from the library's own `genre`, `albumArtist` and `year` tags, and marks them with a nullable `playlist.tag_key`. A row is a projection target **only** when that key is non-null, and the key is written only by the projector — so there is no state in which a manual album is rewritten, not even one named exactly after a tag group. Deleting a derived album suppresses its tag in `meta`; "Detach from Tags" clears the key and the album keeps its songs as an ordinary hand-made one. Both are documented in `docs/08-playlists-and-library.md` §5.
+
+So D14's line stands, with one addition: a derived album claims no `artist` field, because that field means something else — its cell shows `Genre · rock` instead, so a derived album named "Rock" is visibly a different kind of object from a hand-made one of the same name.
 
 **Known limit.** `AVFoundation` surfaces only the *number* half of an iTunes m4a's `trkn` and `disk` atoms; the total lives inside the atom's bytes, which it does not expose. `trackTotal` and `discTotal` are therefore `nil` for m4a, and `nil` for a bare `3` in any format. They are not guessed. Getting them would mean hand-parsing the `ilst` atom, which is the kind of private-format parsing this codebase does not do elsewhere.
 
@@ -978,23 +1073,31 @@ The model could not represent metadata even if some were available. `AudioFile` 
 
 **Medium.**
 
-The register leans on `file.swift:NNN` as its primary evidence, and that evidence has drifted. Resolving all 463 `file:line` references across `docs/*.md` against the current tree:
+The register leans on `file.swift:NNN` as its primary evidence, and that evidence has drifted. Resolving all `file:line` references across `docs/*.md` against the current tree — a reference is **broken** if the file is gone, if the line is past the end, or if it lands on a blank line:
 
-| Outcome | Count |
-|---|---|
-| Resolve to a real line of code | 396 |
-| **Land on a blank line, or past the end of the file** | **25** |
-| **Name a file that no longer exists** | **42** |
+| Outcome | First count | Now |
+|---|---|---|
+| Resolve to a real line of code | 396 | **338** |
+| **Broken — file gone, line past the end, or landing on a blank line** | **67** | **29** |
+| Resolve but **unverified** — never audited for whether the code is the thing being claimed | 396 | 338 |
 
 Two distinct causes, and only one of them is fixable by editing numbers.
 
-**Deleted files (42).** `AudioImportService.swift` was removed in the `laptop` merge, and 20 references still cite it — `docs/01` ×3, `docs/08` ×1, `docs/09` ×5, `docs/12` ×3, and this register ×10 including [B7](#b7-processpendingimports-deletes-the-whole-directory) and [C2](#c2-cleanuporphanedfiles-deletes-untracked-files). Where the surrounding entry is marked **historical** this is defensible: those describe a pre-merge state, and `:171` genuinely was `removeItem(at: pendingDirectory)` then. Where the entry is *not* marked historical it is actively misleading, because it cites a line of code that no longer exists as if a reader could go and check it.
+**Gone or past the end (22).** `AudioImportService.swift` accounts for **20** of the 23. An earlier version of this entry said the file "was removed in the `laptop` merge" — **that was wrong**: the file still exists, at **45 lines**, holding nothing but a doc comment and two forwards into `LibraryImportPipeline`. The imports all moved out; the type stayed so `audioManager.importService` and the document picker's `for url in urls` loop were unchanged. So a reference to `:171` is now *past the end of a file that exists*, which is worse to read than a missing file, not better — a reader finds the file, finds it is 45 lines long, and still cannot check the claim. The other two are `AudioLibraryService.swift:129-138` in `docs/07`, which now ends at 130 because the filesystem-reconciliation methods were deleted.
 
-**Blank-line references (25).** These are worse, because the file is still there — a reader follows the pointer, lands on nothing, and has no way to tell whether the claim is false or merely misnumbered. `audio_manager.swift` accounts for six (`:7`, `:95` ×2, `:261`, `:265`, `:145`), `PlaylistService.swift` for five, and `UnifiedAudioAnalyser.swift`, `content_view.swift` and `PlaylisList_view.swift` for the rest.
+Where the surrounding entry is marked **historical** the reference is defensible: those describe a pre-merge state, and `removeItem(at: pendingDirectory)` genuinely was at `:171` then. Where the entry is *not* marked historical it is actively misleading, because it cites code that no longer exists as if a reader could go and check it — [B7](#b7-processpendingimports-deletes-the-whole-directory) and [C2](#c2-cleanuporphanedfiles-deletes-untracked-files) both do.
+
+**Blank lines (7).** These are the worst kind, because the file is right there and the line number is in range — a reader follows the pointer, lands on nothing, and has no way to tell whether the claim is false or merely misnumbered. `audio_manager.swift` accounts for five, with one each in `UnifiedAudioAnalyser.swift` and `View/content_view.swift`.
+
+**What this batch fixed.** `docs/08` was re-derived from the source rather than patched: 57 line references were stale, §4 described `cleanupOrphanedFiles` and `generateUniqueFileName` — **both deleted years ago in model terms** — and §3.1 still described `clearZombiePlaylists`, which removed the single highest-severity data-loss path in the library layer. `docs/12` had 7 stale references into `LibraryStore` and no mention of schema v3. `docs/08` is now **33 references, 0 broken**; `docs/12` is 25, of which 2 are broken and both are `AudioImportService`. (Resolvable is not *correct* — see the trap below — but every number in `docs/08` was read out of the source rather than carried over.) That is the shape of the work: **the stale references cluster where the documentation was never re-read after a rewrite**, which is not where an audit looking for line-number rot would look.
 
 **Why it went unnoticed.** Every one of these was true when written. Nothing in the build checks a prose line reference, and a reference that silently rots produces no failure — it just quietly stops being evidence. The drift is one-sided: a line reference can only ever become *less* accurate as code is inserted above it, so the count is a lower bound that grows with every edit.
 
-**Not fixed here.** Correcting 67 references is a documentation pass over eight files, and the 42 that name deleted files need a judgement call each — rewrite against the replacement code, or mark the containing entry historical. That is not a change to make opportunistically inside a crash fix, where it would be unreviewable. Two mechanical rules would stop it recurring, and neither is urgent: prefer naming the **symbol** over the line (`loadMasterPlaylistID`, which survives edits) and keep the line as a convenience; and when a file is deleted, sweep its references in the same commit.
+**Not fixed here, deliberately.** The remaining 29 need a judgement call each — rewrite against the replacement code, or mark the containing entry historical — and doing that inside a crash fix or an album feature would be unreviewable. `docs/01`, `docs/09` and `docs/07` are untouched, and `docs/01` is in any case stale for unrelated reasons. Three mechanical rules would stop it recurring, and only the first is hard:
+
+- **Prefer naming the symbol over the line.** `loadMasterPlaylistID`, `moveCollection(in:from:to:)`, `addAudioFiles(_:to:)` survive every edit above them; `:128` does not. The line is a convenience, not the evidence. Every section of `docs/08` rewritten in this batch cites both.
+- **When a file shrinks, sweep its references in the same commit** — and check the *size*, not just the existence. This is the lesson of `AudioImportService`: it never went away, it went to 45 lines, and no existence check would have caught it.
+- **Treat a documentation-only commit as real work, not cleanup.** Two of the three sections fixed here were not rot at all; they described deleted code as if it were live.
 
 **Exploration notes.**
 - **Ruled out:** "the register was written against a different tree and never re-checked." That is what happened, and it is the point — but the fix is not re-checking once. It is changing what the references point at.
@@ -1145,34 +1248,42 @@ The 60 Hz analysis `Timer` (`:286-291`), three shader clocks and SwiftUI layout 
 
 ### E14 An interruption leaves state that reads as "still playing"
 
-**Critical.**
+**Critical — partially fixed.**
 
 > **User report:** *"when a song is playing and the user gets a call, the music stops playing but it is still registered as playing."*
+>
+> **User report:** *#54* — the same symptom, filed again after the original entry was written.
 
-The `.began` handler does three things (`Services/AudioSessionService.swift:101-105`): sets `manager.isPlaying = false`, invalidates the timer, and calls `currentEngine?.pause()`. It does **not** clear `currentlyPlayingID`, does **not** call `updateNowPlayingInfo()`, and does **not** clear `MPNowPlayingInfoCenter`. Four consequences follow:
+The `.began` handler did three things (`Services/AudioSessionService.swift:101-105`): sets `manager.isPlaying = false`, invalidates the timer, and calls `currentEngine?.pause()`. It did **not** clear `currentlyPlayingID`, did **not** call `updateNowPlayingInfo()`, and did **not** clear `MPNowPlayingInfoCenter`. Four consequences followed:
 
 1. **The system still reports the track as live.** `MPNowPlayingInfoPropertyPlaybackRate` is written from `manager.isPlaying` at `:186` and is never rewritten, so it keeps its last value of `1.0`. Control Center and the lock screen show the song as playing. This is the "still registered as playing" the user sees — the app's own flag is correct, the *published* one is stale.
 2. **The in-app mini-player keeps a track and a frozen progress bar.** `currentlyPlayingID` survives, and `currentTime` stops updating because the timer was invalidated.
 3. **Nothing restarts it.** For a phone call, `.ended` arrives **without** `.shouldResume` — the normal outcome — and that branch (`:107-119`) is gated entirely on the option, so it does nothing at all. The timer stays dead.
 4. **Returning to the app does not repair it.** The `willEnterForeground` handler (`:163-174`) re-activates the session but never restarts the engine or the timer.
 
-Recovery therefore requires a user action. `startTimer()` is reached from exactly three places — `load` (`AudioPlaybackService.swift:59`), `togglePlayPause` (`:88`), and `skipNextSong` (`:172`, only when `timer == nil`) — and **every one of them is user-initiated**. No automatic path restarts it: not the `.ended` branch, not `willEnterForeground`. The player stays frozen until the user taps something.
+**Fixed: consequence 1, and only consequence 1.** `.began` now calls `updateNowPlayingInfo()`, which maps `isPlaying` to the rate and so publishes `0.0`. It deliberately *updates* the info rather than clearing it — clearing `nowPlayingInfo` would drop the entry from Control Center entirely, so an interrupted track would vanish instead of showing as paused.
 
-`stop()` has the same gap (`Services/AudioPlaybackService.swift:63-75`): it never clears `MPNowPlayingInfoCenter` either, so the identical symptom appears whenever the queue ends and `:195` calls `stop()`.
+The resume side needs no matching call, and that asymmetry is the evidence that this was a one-sided bug rather than a general one: `.ended` sets `isPlaying = true` and calls `startTimer()`, whose first tick calls `updateNowPlayingInfo()` itself (`AudioPlaybackService.swift:119-136` — `lastSecond` starts at `-1`, so the first fire always differs). **The stop side has no timer to do it for us, which is exactly why the call belongs there.** The route-change handler already had it; this path was the outlier. The timer teardown also now goes through `playbackService.stopTimer()` rather than repeating its two statements inline.
 
-Two structural problems sit underneath:
+**Still open.** Consequence 1 is the reported symptom and the only part of it that the user could see from outside the app, but consequences 2–4 are untouched, and they are what leaves the player frozen:
 
-- **`manager.isPlaying` and `AVAudioPlayerNode.isPlaying` are two unreconciled sources of truth for one fact.** `togglePlayPause` *branches* on the engine's (`:80`) but *writes* the manager's (`:82`, `:87`). Any path that moves one without the other leaves them disagreeing, and the UI reads the manager's.
-- **`pause()` is the only engine mutation not serialised.** `load`, `play`, `stop`, and `seek` all dispatch onto `audioQueue` (`AudioEngines/AppleAudioEngine.swift:176`, `:192`, `:226`, `:241`), but `pause()` calls `playerNode.pause()` directly on whatever thread the notification arrived on (`:221-223`) — so it races in-flight scheduling work on the queue.
+- Recovery still requires a user action. `startTimer()` is reached from exactly three places — `load` (`AudioPlaybackService.swift:59`), `togglePlayPause` (`:88`), and `skipNextSong` (`:172`, only when `timer == nil`) — and **every one of them is user-initiated**. No automatic path restarts it: not the `.ended` branch, not `willEnterForeground`.
+- `currentlyPlayingID` still survives, on purpose. Clearing it was considered and rejected: it is the only record of *what* to resume, and `.ended` carries no other hint. Keeping it costs a mini-player showing the right track at the right frozen position, which is the correct thing to show; the cost is that it must be kept in step.
+- `stop()` (`AudioPlaybackService.swift:63-75`) still does not clear `MPNowPlayingInfoCenter`, so the identical published-state gap appears whenever the queue ends and `:195` calls `stop()`.
+- Two structural problems sit underneath, both untouched:
+  - **`manager.isPlaying` and `AVAudioPlayerNode.isPlaying` are two unreconciled sources of truth for one fact.** `togglePlayPause` *branches* on the engine's (`:80`) but *writes* the manager's (`:82`, `:87`). Any path that moves one without the other leaves them disagreeing, and the UI reads the manager's. **The fix above makes this worse in one narrow way**: the published rate now depends on the manager's flag being right, which is the one the engine's branch can contradict. That was already true for the rate written by the timer; the `.began` path just made it visible on the interrupt route.
+  - **`pause()` is the only engine mutation not serialised.** `load`, `play`, `stop`, and `seek` all dispatch onto `audioQueue` (`AudioEngines/AppleAudioEngine.swift:176`, `:192`, `:226`, `:241`), but `pause()` calls `playerNode.pause()` directly on whatever thread the notification arrived on (`:221-223`) — so it races in-flight scheduling work on the queue.
 
-**Fix:** in the `.began` branch, also call `updateNowPlayingInfo()` (or set the rate to `0` and clear `nowPlayingInfo`) and decide explicitly whether `currentlyPlayingID` should survive. Handle the `!shouldResume` case by presenting a paused-but-resumable state rather than silently stalling. In `stop()`, clear `MPNowPlayingInfoCenter.default().nowPlayingInfo`. Then make `AppleAudioEngine.pause()` go through `audioQueue` like every sibling.
+**Fix, for what remains:** handle the `!shouldResume` case by presenting a paused-but-resumable state rather than silently stalling, and clear `MPNowPlayingInfoCenter.default().nowPlayingInfo` in `stop()`. Then reconcile the two `isPlaying` flags on one side of the boundary, and make `AppleAudioEngine.pause()` go through `audioQueue` like every sibling.
 
 **Exploration notes.**
 - **Ruled out:** "the `.began` branch is missing." It exists and does set `isPlaying = false` — which is why the bug is confusing to chase. The stale state is in the *published* now-playing info, not the flag.
 - **Ruled out:** "`AVAudioPlayerDelegate` cleans up the leftover state." `AudioManager` conforms at `audio_manager.swift:270` and implements `audioPlayerDidFinishPlaying` (`:249-255`), but **nothing in the codebase is an `AVAudioPlayer`** — the engine is `AVAudioEngine` + `AVAudioPlayerNode`. That delegate method is dead and can never repair this.
 - **Ruled out:** "the route-change handler is responsible." `.oldDeviceUnavailable` (`AudioSessionService.swift:125-146`) *does* call `updateNowPlayingInfo()` and correctly declines to auto-resume. A phone call is an interruption, not a route change.
-- **To confirm:** log the interruption `type` and `options` raw values, plus `MPNowPlayingInfoCenter.default().nowPlayingInfo?["MPNowPlayingInfoPropertyPlaybackRate"]` immediately before and after a call. Expect `.ended` with an empty options set and a rate still at `1.0`.
-- **Checked, and worth stating explicitly so nobody re-checks it:** this is **not** the same trigger as [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block). A throw in `setupAudioSession` (`audio_manager.swift:95`) cannot suppress the interruption observer — `setupInterruptionObserver()` is called independently on the next line (`:90`), outside the `do`. So a failed session setup makes remote commands inert while interruptions are still handled normally. The two reports are separate bugs; do not merge their investigations.
+- **Verified with a harness:** 23/23, compiled from a byte-identical copy of `updateNowPlayingInfo()`. A playing track publishes `1.0`; flipping `isPlaying` alone leaves `1.0`; `updateNowPlayingInfo()` publishes `0.0` with elapsed time preserved and the entry intact. Run against the pre-fix source it fails 4 of the 23, so it is a regression guard rather than a tautology. It separately asserts `nowPlayingInfo` is assigned in exactly one place — a second writer would change the premise of the whole fix.
+- **Not provable off-device:** that a real `AVAudioSession.interruptionNotification` reaches that method. That link is asserted on the source text instead, which is weaker than executing it and weaker still than extracting the branch into a pure `interruptionResponse(type:options:)`. Offered as the caller's decision rather than taken unilaterally — the harness is worth more with that refactor than without it, and it is not worth the churn on its own.
+- **To confirm on device:** log the interruption `type` and `options` raw values, plus `MPNowPlayingInfoCenter.default().nowPlayingInfo?["MPNowPlayingInfoPropertyPlaybackRate"]` immediately before and after a call. Expect `.ended` with an empty options set, and a rate now at `0.0` rather than `1.0` — the remaining defect is the frozen in-app player, not the published state.
+- **Checked, and worth stating explicitly so nobody re-checks it:** this is **not** the same trigger as [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block). A throw in `setupAudioSession` (`audio_manager.swift:95`) cannot suppress the interruption observer — `setupInterruptionObserver()` is called independently on the next line (`:90`), outside the `do`. So a failed session setup makes remote commands inert while interruptions are still handled normally. The two reports are separate bugs; do not merge their investigations. **They still compose**: when E16 fires the user has no remote way to recover from E14 either, which is why the two rows in *Reported symptoms* are listed against the same report.
 
 ### E15 Two racing mechanisms advance the queue, and a stale completion can skip a just-started song
 
