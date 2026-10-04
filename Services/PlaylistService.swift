@@ -295,8 +295,27 @@ final class PlaylistService {
         return newPlaylist
     }
 
+    /// Deletes a collection.
+    ///
+    /// A derived album is not deleted like any other: deleting one is how the
+    /// user says "do not make this album from my tags", so the tag is recorded in
+    /// `meta` before the row goes. Without that the next projection would recreate
+    /// it and the deletion would appear to do nothing — see
+    /// `TagAlbumProjector.suppress`.
+    ///
+    /// Doing it here rather than in the projector's own remove path is what makes
+    /// it work from every entry point: the context menu, the empty-state views and
+    /// a future "clear all" all go through here, and none of them know or care
+    /// whether the album they are deleting was derived.
     func deletePlaylist(_ playlist: Playlist) {
         guard playlist.id != manager.masterPlaylistID else { return }
+
+        // Before the row goes: the album's `tagKey` is what identifies the group,
+        // and it is gone afterwards.
+        if let key = playlist.tagKey {
+            TagAlbumProjector.suppress(key: key, in: manager)
+        }
+
         manager.playlists.removeAll { $0.id == playlist.id }
         manager.artworkService.deleteArtworkIfUnused(playlist.artworkImageName)
         savePlaylists()

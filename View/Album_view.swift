@@ -249,6 +249,15 @@ struct AlbumsListView: View {
             showingRenameAlbumAlert = true
         }
 
+        // Only on a derived album — the presence of a `tagKey` *is* the test, so this
+        // cannot drift from the projector's own eligibility rule. Once detached
+        // the key is gone and the action stops appearing.
+        if album.tagKey != nil {
+            Button("Detach from Tags", systemImage: "link.badge.minus") {
+                TagAlbumProjector.detach(album: album, from: audioManager)
+            }
+        }
+
         Button(role: .destructive) {
             audioManager.deletePlaylist(album)
         } label: {
@@ -275,6 +284,21 @@ struct AlbumGridCell: View {
         return audioManager.artworkService.loadArtworkImage(name)
     }
 
+    /// The artist's name if there is one, otherwise the tag that built a derived
+    /// album, otherwise a song count.
+    ///
+    /// In that order, so a derived album never shows a count while the tag that
+    /// explains what it is is available. See `GroupTag.descriptor(for:)`.
+    private func subtitle(_ album: Playlist, songCount: Int) -> String {
+        if let artist = album.artist { return artist }
+        if let key = album.tagKey,
+           let descriptor = TagAlbumProjector.descriptor(for: key)
+        {
+            return descriptor
+        }
+        return "\(songCount) songs"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             AlbumCoverThumbnail(cover: cover)
@@ -286,7 +310,10 @@ struct AlbumGridCell: View {
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text(album.artist ?? "\(songs.count) songs")
+            // A derived album shows which tag built it, because "Rock" on the Albums page
+            // is otherwise indistinguishable from an album the user made called
+            // Rock — and the two behave differently.
+            Text(subtitle(album, songCount: songs.count))
                 .font(.caption)
                 .foregroundStyle(theme.secondaryTextColor)
                 .lineLimit(1)

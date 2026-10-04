@@ -597,6 +597,50 @@ final class LibraryStore: @unchecked Sendable {
         )
     }
 
+    /// Reads a value out of the key/value `meta` table.
+    ///
+    /// `meta` is where state goes that has no column of its own and does not
+    /// deserve one — a pointer to another row, or a small set the app owns. It is
+    /// not a second `UserDefaults`: it shares the store's transaction, so a value
+    /// and the rows it describes cannot disagree.
+    ///
+    /// Deliberately plain. There is no typed accessor per value, because every one
+    /// added so far has been a single call site, and a `switch` over value kinds
+    /// would be a second serialisation format to keep in step with the first.
+    func metaValue(forKey key: String) throws -> String? {
+        try withLock {
+            try query(
+                "SELECT value FROM meta WHERE key = ?;",
+                bindings: [.text(key)]
+            ) { stmt in
+                guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+                return Self.text(stmt, 0)
+            }
+        }
+    }
+
+    /// Writes or removes a `meta` value.
+    ///
+    /// A `nil` value deletes the row rather than storing a null, so a key is
+    /// either present with a value or absent. `INSERT OR REPLACE` rather than an
+    /// upsert on `key`, because the key is the primary key and this says "make
+    /// the row say this" without caring whether it existed.
+    func setMetaValue(_ value: String?, forKey key: String) throws {
+        try withLock {
+            if let value {
+                try exec(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?);",
+                    bindings: [.text(key), .text(value)]
+                )
+            } else {
+                try exec(
+                    "DELETE FROM meta WHERE key = ?;",
+                    bindings: [.text(key)]
+                )
+            }
+        }
+    }
+
     /// Retracts the master pointer.
     ///
     /// Deleting a `playlist` row does **not** cascade into `meta`, which stores

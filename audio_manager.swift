@@ -204,8 +204,27 @@ class AudioManager: NSObject, ObservableObject {
             await MainActor.run {
                 self.libraryService.loadAudioFiles()
                 self.displayedSongs = self.sortedAudioFiles
+                self.refreshTagAlbums()
             }
         }
+    }
+
+    /// Rebuilds the albums that are derived from the library's tags.
+    ///
+    /// Two call sites, both chosen so the work is proportional to *changes* rather
+    /// than to library size:
+    ///
+    /// - here, because the sweep is the only thing that fills in tags for files
+    ///   imported before tags existed;
+    /// - `finishOneImport`, when the last file of a batch lands.
+    ///
+    /// The second matters more than it looks. A projector run per file would make
+    /// a 200-file import do 200 full passes over the library, and each pass saves
+    /// — so it has to be once per batch, not once per file.
+    ///
+    /// Safe to call when nothing changed: it makes no write at all in that case.
+    func refreshTagAlbums() {
+        TagAlbumProjector(manager: self).run()
     }
 
     deinit {
@@ -261,6 +280,10 @@ class AudioManager: NSObject, ObservableObject {
 
         importProgress = ImportProgress()
         isImporting = false
+
+        // The batch is over, so every newly imported file's tags are in. One
+        // projection for the whole batch — see `refreshTagAlbums`.
+        refreshTagAlbums()
     }
 
     func importAudioFile(from url: URL) {
