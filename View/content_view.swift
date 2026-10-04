@@ -222,7 +222,11 @@ struct ContentView: View {
                     renamingAudioFile: $renamingAudioFile,
                     newFileName: $newFileName,
                     isScrolledDown: $isScrolledDown,
-                    albums: filteredAlbums
+                    albums: filteredAlbums,
+                    // Tells `AlbumsListView` that it is looking at a search
+                    // result, so it can refuse to offer a reorder that would
+                    // renumber the wrong albums.
+                    isFiltered: !searchText.isEmpty
                 )
             }
         }

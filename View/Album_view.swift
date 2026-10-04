@@ -45,82 +45,44 @@ struct AlbumsListView: View {
     @Binding var newFileName: String
     @Binding var isScrolledDown: Bool
     let albums: [Playlist]
+    /// Whether `albums` is a search result rather than the whole Albums page.
+    ///
+    /// Passed in rather than derived, because only `ContentView` knows about
+    /// `searchText`, and the difference decides whether reordering is offered at
+    /// all — see `reorderableAlbums`.
+    var isFiltered: Bool = false
 
     @State private var albumBeingAddedTo: Playlist?
     @State private var albumBeingRenamed: Playlist?
     @State private var showingRenameAlbumAlert = false
     @State private var renamingAlbumName = ""
+    @State private var isReorderMode = false
 
     private let columns = Array(
         repeating: GridItem(.flexible(), spacing: 12),
         count: 3
     )
 
+    /// The page `.onMove`'s indices refer to.
+    ///
+    /// `nil` while a search is active, which disables reordering. A `LazyVGrid`
+    /// has no `.onMove`, so reordering swaps the grid for a `List` — and `.onMove`
+    /// indexes whatever array it is attached to, which is the *rendered* one. If
+    /// that were `filteredAlbums`, dragging the third of five search results
+    /// would renumber three unrelated positions against the unfiltered page. This
+    /// is C5's lesson applied one level up: the list the user is looking at and
+    /// the list being renumbered have to be the same list, or be no list at all.
+    private var reorderableAlbums: [Playlist]? {
+        isFiltered ? nil : albums
+    }
+
     var body: some View {
-        // One pass over the library for the whole grid, rather than a resolve
-        // per cell.
-        let songsByAlbum = audioManager.songsByPlaylistID(for: albums)
-
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 20) {
-                ForEach(albums) { album in
-                    let songs = songsByAlbum[album.id] ?? []
-
-                    NavigationLink {
-                        AlbumDetailView(
-                            albumID: album.id,
-                            audioManager: audioManager,
-                            navigateToPlayer: $navigateToPlayer,
-                            selectedAudioFile: $selectedAudioFile,
-                            artworkTarget: $artworkTarget,
-                            showingRenameAlert: $showingRenameAlert,
-                            renamingAudioFile: $renamingAudioFile,
-                            newFileName: $newFileName,
-                            isScrolledDown: $isScrolledDown
-                        )
-                    } label: {
-                        AlbumGridCell(album: album, songs: songs, audioManager: audioManager)
-                    }
-                    .buttonStyle(.plain)
-                    .contextMenu {
-                        Button(
-                            album.coverIsManual ? "Change Cover" : "Set Cover",
-                            systemImage: "photo"
-                        ) {
-                            artworkTarget = .playlist(album)
-                        }
-
-                        if album.coverIsManual {
-                            Button(
-                                "Remove Cover",
-                                systemImage: "photo.badge.minus",
-                                role: .destructive
-                            ) {
-                                audioManager.removeArtwork(from: album)
-                            }
-                        }
-
-                        Button("Add Songs", systemImage: "plus") {
-                            albumBeingAddedTo = album
-                        }
-
-                        Button("Rename", systemImage: "pencil.and.outline") {
-                            albumBeingRenamed = album
-                            renamingAlbumName = album.name
-                            showingRenameAlbumAlert = true
-                        }
-
-                        Button(role: .destructive) {
-                            audioManager.deletePlaylist(album)
-                        } label: {
-                            Label("Delete Album", systemImage: "trash")
-                        }
-                    }
-                }
+        Group {
+            if isReorderMode, let reorderableAlbums {
+                reorderList(reorderableAlbums)
+            } else {
+                grid
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 35)
         }
         .background(Color.clear)
         .onScrollGeometryChange(for: CGFloat.self) { geo in
@@ -128,6 +90,21 @@ struct AlbumsListView: View {
         } action: { _, newOffset in
             withAnimation(.spring(response: 0.5, dampingFraction: 0.62, blendDuration: 0.15)) {
                 isScrolledDown = newOffset > 60
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if isReorderMode {
+                    Button("Done") { isReorderMode = false }
+                        .foregroundStyle(theme.accentColor)
+                } else {
+                    Button {
+                        isReorderMode = true
+                    } label: {
+                        Label("Reorder", systemImage: "arrow.up.arrow.down")
+                    }
+                    .disabled(reorderableAlbums == nil)
+                }
             }
         }
         .sheet(item: $albumBeingAddedTo) { album in
@@ -150,6 +127,138 @@ struct AlbumsListView: View {
                 Text("Enter a new name for '\(album.name)'")
             }
         }
+    }
+
+    // MARK: - The two layouts
+
+    private var grid: some View {
+        // One pass over the library for the whole grid, rather than a resolve
+        // per cell.
+        let songsByAlbum = audioManager.songsByPlaylistID(for: albums)
+
+        return ScrollView {
+            LazyVGrid(columns: columns, spacing: 20) {
+                ForEach(albums) { album in
+                    let songs = songsByAlbum[album.id] ?? []
+
+                    NavigationLink {
+                        AlbumDetailView(
+                            albumID: album.id,
+                            audioManager: audioManager,
+                            navigateToPlayer: $navigateToPlayer,
+                            selectedAudioFile: $selectedAudioFile,
+                            artworkTarget: $artworkTarget,
+                            showingRenameAlert: $showingRenameAlert,
+                            renamingAudioFile: $renamingAudioFile,
+                            newFileName: $newFileName,
+                            isScrolledDown: $isScrolledDown
+                        )
+                    } label: {
+                        AlbumGridCell(album: album, songs: songs, audioManager: audioManager)
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu { albumContextMenu(album) }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 35)
+        }
+    }
+
+    /// Reorder mode.
+    ///
+    /// A `List`, not the grid: `LazyVGrid` has no `.onMove`, and iOS offers no way
+    /// to drag a grid cell to a new index. Swapping layouts is the same approach
+    /// `AlbumDetailView` already takes for its songs, and it keeps the
+    /// arrangement on screen while it is being made instead of hiding it behind a
+    /// second screen.
+    ///
+    /// Rows are non-navigating in this mode — the drag handles are the point, and
+    /// a `NavigationLink` row in an active `List` competes with them for the same
+    /// gesture.
+    private func reorderList(_ page: [Playlist]) -> some View {
+        let songsByAlbum = audioManager.songsByPlaylistID(for: page)
+
+        return List {
+            ForEach(page) { album in
+                let songs = songsByAlbum[album.id] ?? []
+
+                HStack(spacing: 12) {
+                    AlbumCoverThumbnail(cover: albumCover(album, songs: songs))
+                        .frame(width: 44, height: 44)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(album.name)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(theme.textColor)
+                            .lineLimit(1)
+                        Text(album.artist ?? "\(songs.count) songs")
+                            .font(.caption)
+                            .foregroundStyle(theme.secondaryTextColor)
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
+            .onMove { source, destination in
+                // `page` is the array this `ForEach` renders, so the indices are
+                // positions in it. Passing it through is what makes that true —
+                // see `reorderableAlbums`.
+                audioManager.moveCollection(in: page, from: source, to: destination)
+            }
+
+            Color.clear.frame(height: 35)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+        }
+        .listStyle(PlainListStyle())
+        .scrollContentBackground(.hidden)
+        .environment(\.editMode, .constant(.active))
+    }
+
+    @ViewBuilder
+    private func albumContextMenu(_ album: Playlist) -> some View {
+        Button(
+            album.coverIsManual ? "Change Cover" : "Set Cover",
+            systemImage: "photo"
+        ) {
+            artworkTarget = .playlist(album)
+        }
+
+        if album.coverIsManual {
+            Button(
+                "Remove Cover",
+                systemImage: "photo.badge.minus",
+                role: .destructive
+            ) {
+                audioManager.removeArtwork(from: album)
+            }
+        }
+
+        Button("Add Songs", systemImage: "plus") {
+            albumBeingAddedTo = album
+        }
+
+        Button("Rename", systemImage: "pencil.and.outline") {
+            albumBeingRenamed = album
+            renamingAlbumName = album.name
+            showingRenameAlbumAlert = true
+        }
+
+        Button(role: .destructive) {
+            audioManager.deletePlaylist(album)
+        } label: {
+            Label("Delete Album", systemImage: "trash")
+        }
+    }
+
+    private func albumCover(_ album: Playlist, songs: [AudioFile]) -> UIImage? {
+        guard let name = audioManager.coverName(for: album, songs: songs) else { return nil }
+        return audioManager.artworkService.loadArtworkImage(name)
     }
 }
 

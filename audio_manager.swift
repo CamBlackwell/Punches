@@ -353,6 +353,12 @@ class AudioManager: NSObject, ObservableObject {
         playlistService.reorderPlaylistSongs(in: playlist, from: source, to: destination)
     }
 
+    /// Records the user's arrangement of one page. The page is passed rather than
+    /// looked up — see `PlaylistService.moveCollection`.
+    func moveCollection(in page: [Playlist], from source: IndexSet, to destination: Int) {
+        playlistService.moveCollection(in: page, from: source, to: destination)
+    }
+
     func updatePlaylistOrder(_ playlist: Playlist, with ids: [UUID]) {
         playlistService.updatePlaylistOrder(playlist, with: ids)
     }
