@@ -288,9 +288,9 @@ It reads five metrics, all of which **are** live and all of which are wired up:
 
 | Row | Source |
 |---|---|
-| `Engine Starves: N` | `manager.currentEngine?.debugMetrics.starveCount` — `AudioEngines/AppleAudioEngine.swift:291` |
-| `Max Scheduled Ahead: N` | `debugMetrics.maxScheduledAhead` — `:292` |
-| `Avg Schedule: %.2f ms` | `debugMetrics.avgScheduleMs` — `:293`, an EWMA updated at `:170-171` |
+| `Engine Starves: N` | `manager.currentEngine?.debugMetrics.starveCount` — `AudioEngines/AppleAudioEngine.swift:379` |
+| `Max Scheduled Ahead: N` | `debugMetrics.maxScheduledAhead` — `:379` |
+| `Avg Schedule: %.2f ms` | `debugMetrics.avgScheduleMs` — `:379`, an EWMA updated at `:253-255` |
 | `Tap Max: %.0f µs` | `manager.audioAnalyzer.tapCallbackMaxUs` — `UnifiedAudioAnalyser.swift:352` |
 | `Tap Overruns: N` | `manager.audioAnalyzer.tapOverrunCount` — `:353` |
 
@@ -305,7 +305,7 @@ public struct EngineDebugMetrics {
 }
 ```
 
-`AppleAudioEngine` maintains the three counters privately (`:22-24`), bumps `debug_starveCount` in the render-path completion handler (`:149`, using `&+=` so it can't trap), tracks the high-water mark of scheduled buffers (`:133-134`), and updates the EWMA with `debug_ewmaAlpha` (`:170-171`). `debugMetrics` returns zeros when the engine isn't the Apple one (`:296`).
+`AppleAudioEngine` maintains the three counters privately (`:23-25`), bumps `debug_starveCount` in the render-path completion handler (`:233`, using `&+=` so it can't trap), tracks the high-water mark of scheduled buffers (`:217-218`), and updates the EWMA with `debug_ewmaAlpha` (`:253-255`). `debugMetrics` returns zeros when the engine isn't the Apple one (`:379`).
 
 The analyser measures the tap callback with `mach_absolute_time` around `writeToRingBuffer` and **hops to the main queue** to publish (`:340-355`), with a `tapOverrunThresholdUs = 1000` (1 ms) budget (`:149`).
 

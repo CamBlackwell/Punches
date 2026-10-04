@@ -7,7 +7,7 @@
 
 ## 1. The engine graph
 
-Built in `AppleAudioEngine.setupAudioEngine()` (`AudioEngines/AppleAudioEngine.swift:65-76`):
+Built in `AppleAudioEngine.setupAudioEngine()` (`AudioEngines/AppleAudioEngine.swift:76-87`):
 
 ```
 AVAudioPlayerNode ──► AVAudioUnitTimePitch ──► mainMixerNode ──► output
@@ -15,7 +15,13 @@ AVAudioPlayerNode ──► AVAudioUnitTimePitch ──► mainMixerNode ──�
                                               bufferSize = hopSize)
 ```
 
-`connect(..., format: nil)` for both connections, so the engine negotiates formats from the source file. The mixer output format — and therefore the tap format — is only valid *after* a file has been connected and the engine has been prepared and started.
+`timePitch → mainMixerNode` is seeded with `format: nil`, so the mixer converts to whatever the hardware is doing. **`playerNode → timePitch` is not left at `nil`**: a node's output format is fixed by its connection and `AVAudioPlayerNode` inserts no sample-rate converter, so a `nil` connection made before any file exists pins the player to the session rate and plays every mismatched file at the wrong speed *and* pitch.
+
+`reconfigureGraphIfNeeded` (`:118`) therefore reconnects **both** edges in the file's `processingFormat` on every load, letting the mixer do the conversion. Both edges are required, and the second one is the subtle half: **`AVAudioUnitTimePitch` pins its own output rate at connect time and does not follow its input.** Reconnecting only the player edge leaves the unit rendering at its original rate, so the mismatch is relocated one node downstream and the detune is unchanged — the player's format is the one that updates, which is exactly why guarding on it looks correct and is not. The guard reads `timePitch.inputFormat(forBus: 0)` instead, the junction between the two nodes and the format that actually stuck. See [E17](14-known-issues.md).
+
+Whichever way the edges above are connected, `mainMixerNode`'s **output** format stays at the hardware rate — which matters, because that is the bus the analyser taps.
+
+The mixer output format — and therefore the tap format — is only valid *after* the engine has been prepared and started.
 
 Nodes (`AppleAudioEngine.swift:6-8`):
 
@@ -31,15 +37,16 @@ Nodes (`AppleAudioEngine.swift:6-8`):
 
 ## 2. The three-buffer setup sequence
 
-`AppleAudioEngine.init` (`:50-63`) and `setupAudioEngine` do redundant work on purpose:
+`AppleAudioEngine.init` (`:57-67`) and `setupAudioEngine` do redundant work on purpose:
 
 ```swift
-// setupAudioEngine() :65-76  — attach, connect, prepare, start
-// init() :54-59              — prepare, start AGAIN (failure tolerated)
-// init() :62                 — warmupTimePitch()
+// setupAudioEngine() :76-87  — attach, connect, prepare, start
+// init() :61-66              — prepare, start AGAIN (failure tolerated)
 ```
 
-`warmupTimePitch()` (`:87-96`) schedules a 512-frame silent buffer through the player node, plays, and immediately stops. This forces `AVAudioUnitTimePitch` to run its first render pass at app launch, so the first real track does not pay a one-time latency spike. The engine is running before any audio exists, which is why `isPlaying` is false but the graph is live.
+`reconfigureGraphIfNeeded` (`:118-150`) runs from `load()` (`:259`) **before anything is scheduled**: it compares the file's rate and channel count against `timePitch.inputFormat(forBus: 0)`, and only on a difference stops the engine, disconnects the player *and* the time-pitch unit, and reconnects both edges in `file.processingFormat`. Both disconnects are required — reconnecting a still-connected bus raises. Same-format track changes skip it entirely, so they cost one comparison; a genuine rate change happens only across a track change, which has already stopped the node, so the reconfig rides on an existing boundary rather than cutting into playback.
+
+`warmupTimePitchIfNeeded` (`:168-…`) then runs once per engine — not from `init` — scheduling a 512-frame silent buffer through the player node, playing, and immediately stopping. This forces `AVAudioUnitTimePitch` to run its first render pass so the first real track does not pay a one-time latency spike. It reads the **player's** format, not the mixer's: a warm-up buffer in the mixer's format would pin the node to the hardware rate and reintroduce [E17](14-known-issues.md) by a second route. The engine is running before any audio exists, which is why `isPlaying` is false but the graph is live.
 
 ---
 
@@ -49,13 +56,13 @@ Nodes (`AppleAudioEngine.swift:6-8`):
 
 | Constant | Value | Line |
 |---|---|---|
-| `buffersAhead` | `5` | `AppleAudioEngine.swift:17` |
-| `bufferDuration` | `0.25` s | `:18` |
-| `bufferFrameCapacity` | `max(sampleRate * 0.25, 1024)` frames, computed once per `load` | `:78-85` |
+| `buffersAhead` | `5` | `AppleAudioEngine.swift:18` |
+| `bufferDuration` | `0.25` s | `:19` |
+| `bufferFrameCapacity` | `max(sampleRate * 0.25, 1024)` frames, computed once per `load` | `:152-159` |
 
 So the engine is kept fed with **1.25 seconds** of audio (5 × 0.25 s), recomputed on every buffer completion.
 
-### `scheduleBuffersIfNeeded()` (`:99-173`)
+### `scheduleBuffersIfNeeded()` (`:183-257`)
 
 ```
 while scheduledBuffersCount < 5 && currentFramePosition < file.length:
@@ -164,14 +171,14 @@ if wasPlaying { ensure engine running; playerNode.play() }
 
 This is a **hard stop-and-reschedule**, not an in-place reposition. It is therefore *not* seamless — expect a click on seek.
 
-> **Gotcha — `duration` uses the file's own sample rate** (`:45-48`: `file.length / file.fileFormat.sampleRate`), whereas `seek` and `currentTime` use `file.processingFormat.sampleRate` (`:212, 248`). For files where those differ (rare but real — e.g. some compressed formats), `duration` and `currentTime` disagree. `AudioPlaybackService` also keeps its own `manager.duration` from `AudioFile.audioDuration` (imported at read time), and the timer compares `currentTime >= duration` (`:134`). Three sources of truth for duration.
+> **`duration` now uses `processingFormat` too** (`:46`: `file.length / file.processingFormat.sampleRate`), matching `seek` (`:330`) and `currentTime` (`:42`). It used to divide by `fileFormat.sampleRate` instead — the on-disk stream rate, which is lower whenever the decoder up-samples, HE-AAC being the common case (encodes at 22.05/24 kHz, decodes to 44.1/48 kHz). That reported roughly double the real duration and disagreed with the seek clock on exactly the files most likely to have it; see [E17](14-known-issues.md). `AudioPlaybackService` still keeps its own `manager.duration` from `AudioFile.audioDuration` (imported at read time), and the timer compares `currentTime >= duration` (`:134`) — so there are still two sources of truth for duration, which [E15](14-known-issues.md) owns.
 
 ---
 
 ## 5. Time reporting
 
 ```swift
-// AppleAudioEngine.swift:36-43
+// AppleAudioEngine.swift:37-44
 var currentTime: TimeInterval {
     guard let nodeTime = playerNode.lastRenderTime,
           let playerTime = playerNode.playerTime(forNodeTime: nodeTime) else {
@@ -200,7 +207,7 @@ var currentTime: TimeInterval {
 ## 6. Pitch and tempo
 
 ```swift
-// AppleAudioEngine.swift:276-286
+// AppleAudioEngine.swift:367-375
 func setTempo(_ tempo: Float) { audioQueue.async { self.timePitch.rate  = tempo } }
 func setPitch(_ pitch: Float) { audioQueue.async { self.timePitch.pitch = pitch } }
 ```
@@ -284,15 +291,15 @@ That asymmetry is deliberate but undocumented in-code; the `playingFromSongsTab`
 
 ## 8. DEBUG metrics
 
-`EngineDebugMetrics` (`audio_engine_protocol.swift:5-15`) is exposed on the protocol and backed by three `#if DEBUG` counters in `AppleAudioEngine` (`:21-26`):
+`EngineDebugMetrics` (`audio_engine_protocol.swift:5-15`) is exposed on the protocol and backed by three `#if DEBUG` counters in `AppleAudioEngine` (`:22-26`):
 
 | Metric | Accumulator | Update |
 |---|---|---|
-| `starveCount` | `debug_starveCount` (`:22`) | `&+= 1` on any true underrun (`:149`) |
-| `maxScheduledAhead` | `debug_maxScheduledAhead` (`:23`) | high-water mark of `scheduledBuffersCount` (`:133-135`) |
-| `avgScheduleMs` | `debug_avgScheduleMsEWMA` (`:24`) | EWMA of `scheduleBuffersIfNeeded` duration, α = `0.2` (`:168-172`, `debug_ewmaAlpha` at `:25`) |
+| `starveCount` | `debug_starveCount` (`:23`) | `&+= 1` on any true underrun (`:233`) |
+| `maxScheduledAhead` | `debug_maxScheduledAhead` (`:24`) | high-water mark of `scheduledBuffersCount` (`:217-218`) |
+| `avgScheduleMs` | `debug_avgScheduleMsEWMA` (`:25`) | EWMA of `scheduleBuffersIfNeeded` duration, α = `0.2` (`:253-255`, `debug_ewmaAlpha` at `:26`) |
 
-In Release all three are zeroed (`debugMetrics` at `:288-298`). The consumer is `AudioHealthHUD` (`AudioHealthHUD.swift`), which is DEBUG-only (`:3`) and **not attached to any view** — see [14-known-issues.md](14-known-issues.md#d3-unused-audiohealthhud).
+In Release all three are zeroed (`debugMetrics` at `:379-389`). The consumer is `AudioHealthHUD` (`AudioHealthHUD.swift`), which is DEBUG-only (`:3`) and **not attached to any view** — see [14-known-issues.md](14-known-issues.md#d3-unused-audiohealthhud).
 
 Practical interpretation:
 - `maxScheduledAhead` should sit at 5. Lower means buffers are being consumed faster than they are produced, i.e. the read loop is keeping up (healthy). A value pinned at 5 with rising `starveCount` means the read loop is too slow.

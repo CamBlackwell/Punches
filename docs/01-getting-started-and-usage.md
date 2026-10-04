@@ -293,7 +293,7 @@ The dead end is that a phone call delivers `.ended` **without** `.shouldResume` 
 
 Auto-advance is wired **twice**, with no coordination:
 
-1. `engine.onPlaybackFinished` fires `skipNextSong()` from the last buffer's completion callback (`AudioPlaybackService.swift:47-49` → `AppleAudioEngine.swift:152-156`).
+1. `engine.onPlaybackFinished` fires `skipNextSong()` from the last buffer's completion callback (`AudioPlaybackService.swift:47-49` → `AppleAudioEngine.swift:213-236`).
 2. The 0.2 s timer checks `currentTime >= duration` and calls `skipNextSong()` (`AudioPlaybackService.swift:134-136`).
 
 Neither records that an advance is already in progress, and `skipNextSong` is not re-entrant. The completion handler checks its stop guard on `audioQueue` and then hops to the main queue **without re-checking**, so a callback that was already past the guard when you pressed Next calls `skipNextSong()` *after* the replacement track has started — skipping it. The timer is also a `Timer.scheduledTimer` in the default run-loop mode, so it does not fire while you are scrolling and is throttled in the background, which is why auto-next is unreliable in exactly the situations people notice it ([14 · E15](14-known-issues.md#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song)).

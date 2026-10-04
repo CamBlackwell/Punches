@@ -63,7 +63,7 @@ The two method annotations:
 |---|---|---|
 | **AVAudioEngine render + tap** | `UnifiedAudioAnalyser.installTapSafely` — `:335-343` | `writeToRingBuffer(_:)` — see [§4](#4-the-real-time-thread-allocates) |
 | **Main run loop, 60 Hz** | `Timer.scheduledTimer` — `:286-291` | `updateSpectrum()` — all FFT, Q3, A-weighting, stereo and goniometer maths |
-| **`DispatchQueue.main`** | `audio.engine.queue` — `AppleAudioEngine.swift:10` | node setup (`AppleAudioEngine.swift:154` hops back to main at `:154` to publish) |
+| **`DispatchQueue.main`** | `audio.engine.queue` — `AppleAudioEngine.swift:10` | node setup (`AppleAudioEngine.swift:238` hops back to main at `:238` to publish) |
 | **Cooperative thread pool** | `AudioImportService` — `:36-53` | the `NSFileCoordinator` copy, via a checked continuation |
 | **Main run loop, per effect** | `AppBackground` — `ShaderEffects.swift:357`, `:386-388` | 60 fps `time` advance, **only while `useFogShader`** (`:388-391`) |
 | **Main run loop, per effect** | Water / Tunnel / Smoke — `ShaderEffects.swift:77`, `:220`, `:310` | each owns a clock at its own `frameInterval` |
@@ -182,7 +182,7 @@ Thirteen `DispatchQueue.main` hops, all of the same shape — a correct pattern 
 DispatchQueue.main.async { [weak self] in … }
 ```
 
-with `[weak self]` at `:311`, `:350`, `:363`, `:563`, `:679`, `:733`, `AudioEngines/AppleAudioEngine.swift:154`, `Services/AudioEngineService.swift:63`, `Services/PlaylistService.swift:138`, `audio_manager.swift:145`, `View/content_view.swift:1737`, `Services/PlaylistService.swift:138`, and `[weak manager]` at `Services/AudioPlaybackService.swift:98`. No retain cycles. This part of the codebase is careful.
+with `[weak self]` at `:311`, `:350`, `:363`, `:563`, `:679`, `:733`, `AudioEngines/AppleAudioEngine.swift:226`, `Services/AudioEngineService.swift:63`, `Services/PlaylistService.swift:138`, `audio_manager.swift:145`, `View/content_view.swift:1737`, `Services/PlaylistService.swift:138`, and `[weak manager]` at `Services/AudioPlaybackService.swift:98`. No retain cycles. This part of the codebase is careful.
 
 > ### ⚠️ One of the hops is a correctness bug
 >

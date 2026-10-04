@@ -34,10 +34,10 @@ A severity-ranked register of every defect, dead path, and documentation error f
 | Severity | Count |
 |---|---|
 | Critical | 17 |
-| High | 33 |
+| High | 34 |
 | Medium | 33 |
 | Low | 18 |
-| **Total** | **101** |
+| **Total** | **102** |
 
 The table counts entries, not distinct defects: [A3](#a3-app-group-entitlement-is-empty) and [B1](#b1-app-group-entitlement-is-empty) are the same root cause documented from the build side and the import side, and several entries share a single fix.
 
@@ -47,6 +47,7 @@ User-reported symptoms and the entries that explain them. A single report can ha
 
 | Symptom (as reported) | Entries | Note |
 |---|---|---|
+| *"Occasionally songs play with dropped pitch but is still set at 0pt change."* (#66) | [E17](#e17-every-track-whose-rate-differs-from-the-audio-session-was-played-slow-or-fast-and-detuned-by-the-same-ratio) | One entry, and the "0pt change" wording is the tell rather than a contradiction: the pitch control really was at `0.0` and the tempo really at `1.0`, because the corruption happened upstream of the time-pitch unit, in the format it was connected with. Fixed — after correcting the first fix, which removed only one of the two rate-pinning mechanisms and left the symptom identical. |
 | *"A call stops the music but it is still registered as playing."* | [E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing) (partially fixed) · [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block) | E14 is the direct cause, and its published-state half is now fixed: the `.began` handler calls `updateNowPlayingInfo()`, so the rate is rewritten to `0.0` instead of staying at `1.0`. Still open in E14: nothing restarts the timer when `.ended` arrives without `.shouldResume`, so the in-app player stays frozen until the user taps something. E16 is a separate aggravator: when it fires, the lock-screen controls are inert too, so the user has no remote way to recover. The two compose — a failed session setup removes the only workaround E14 still needs. |
 | *"There is no file permanence; files disappear after closing the app."* | [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see) · [C2](#c2-cleanuporphanedfiles-deletes-untracked-files) · [B7](#b7-processpendingimports-deletes-the-whole-directory) | C12 is the complete chain and the one to fix first: the index goes empty, then cleanup deletes the files. |
 | *"Auto next song needs some work."* | [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) · [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue) · [C4](#c4-reordering-does-not-update-playbackqueue) | E15 is the duplication and the stale-callback race. D1 is why the loop toggle appears not to work. |
@@ -683,7 +684,7 @@ When the picker's URL has an empty `pathExtension`, `name` is a bare UUID with n
 | `AVAudioFile(forReading:)` | passes | **passes** — sniffs the content |
 | `AVAudioPlayer(contentsOf:)` | passes | **passes** |
 
-`AppleAudioEngine.swift:178` already used `AVAudioFile`, which is why this presented as an import failure rather than a playback failure: the one place that needed the filename was the one place that had thrown it away.
+`AppleAudioEngine.swift:262` already used `AVAudioFile`, which is why this presented as an import failure rather than a playback failure: the one place that needed the filename was the one place that had thrown it away.
 
 **2. `ImportFailure.classify` mapped everything to "Unsupported format".** It returned `.unsupportedCodec` for *every* error whose domain was not `NSCocoaErrorDomain`, and for *every* unrecognised Cocoa code. A SQLite failure, an `NSFileCoordinator` failure, a POSIX `errno` and a Swift decoding error were all reported to the user as a statement about their file. The pipeline captured the real reason in `FailedImport.underlying` and logged it, then rendered only the canned `detail` in the report sheet — so the one useful datum was collected and discarded in the same function.
 
@@ -1272,13 +1273,13 @@ The resume side needs no matching call, and that asymmetry is the evidence that 
 - `stop()` (`AudioPlaybackService.swift:63-75`) still does not clear `MPNowPlayingInfoCenter`, so the identical published-state gap appears whenever the queue ends and `:195` calls `stop()`.
 - Two structural problems sit underneath, both untouched:
   - **`manager.isPlaying` and `AVAudioPlayerNode.isPlaying` are two unreconciled sources of truth for one fact.** `togglePlayPause` *branches* on the engine's (`:80`) but *writes* the manager's (`:82`, `:87`). Any path that moves one without the other leaves them disagreeing, and the UI reads the manager's. **The fix above makes this worse in one narrow way**: the published rate now depends on the manager's flag being right, which is the one the engine's branch can contradict. That was already true for the rate written by the timer; the `.began` path just made it visible on the interrupt route.
-  - **`pause()` is the only engine mutation not serialised.** `load`, `play`, `stop`, and `seek` all dispatch onto `audioQueue` (`AudioEngines/AppleAudioEngine.swift:176`, `:192`, `:226`, `:241`), but `pause()` calls `playerNode.pause()` directly on whatever thread the notification arrived on (`:221-223`) — so it races in-flight scheduling work on the queue.
+  - **`pause()` is the only engine mutation not serialised.** `load`, `play`, `stop`, and `seek` all dispatch onto `audioQueue` (`AudioEngines/AppleAudioEngine.swift:260`, `:283`, `:317`, `:329`), but `pause()` calls `playerNode.pause()` directly on whatever thread the notification arrived on (`:312-314`) — so it races in-flight scheduling work on the queue.
 
 **Fix, for what remains:** handle the `!shouldResume` case by presenting a paused-but-resumable state rather than silently stalling, and clear `MPNowPlayingInfoCenter.default().nowPlayingInfo` in `stop()`. Then reconcile the two `isPlaying` flags on one side of the boundary, and make `AppleAudioEngine.pause()` go through `audioQueue` like every sibling.
 
 **Exploration notes.**
 - **Ruled out:** "the `.began` branch is missing." It exists and does set `isPlaying = false` — which is why the bug is confusing to chase. The stale state is in the *published* now-playing info, not the flag.
-- **Ruled out:** "`AVAudioPlayerDelegate` cleans up the leftover state." `AudioManager` conforms at `audio_manager.swift:270` and implements `audioPlayerDidFinishPlaying` (`:249-255`), but **nothing in the codebase is an `AVAudioPlayer`** — the engine is `AVAudioEngine` + `AVAudioPlayerNode`. That delegate method is dead and can never repair this.
+- **Ruled out:** "`AVAudioPlayerDelegate` cleans up the leftover state." `AudioManager` conforms at `audio_manager.swift:459` and implements `audioPlayerDidFinishPlaying` (`:460-466`), but **nothing in the codebase is an `AVAudioPlayer`** — the engine is `AVAudioEngine` + `AVAudioPlayerNode`. That delegate method is dead and can never repair this.
 - **Ruled out:** "the route-change handler is responsible." `.oldDeviceUnavailable` (`AudioSessionService.swift:125-146`) *does* call `updateNowPlayingInfo()` and correctly declines to auto-resume. A phone call is an interruption, not a route change.
 - **Verified with a harness:** 23/23, compiled from a byte-identical copy of `updateNowPlayingInfo()`. A playing track publishes `1.0`; flipping `isPlaying` alone leaves `1.0`; `updateNowPlayingInfo()` publishes `0.0` with elapsed time preserved and the entry intact. Run against the pre-fix source it fails 4 of the 23, so it is a regression guard rather than a tautology. It separately asserts `nowPlayingInfo` is assigned in exactly one place — a second writer would change the premise of the whole fix.
 - **Not provable off-device:** that a real `AVAudioSession.interruptionNotification` reaches that method. That link is asserted on the source text instead, which is weaker than executing it and weaker still than extracting the branch into a pure `interruptionResponse(type:options:)`. Offered as the caller's decision rather than taken unilaterally — the harness is worth more with that refactor than without it, and it is not worth the churn on its own.
@@ -1295,16 +1296,16 @@ Auto-advance is wired — but it is wired **twice**, with no coordination.
 
 | # | Mechanism | Where |
 |---|---|---|
-| 1 | `engine.onPlaybackFinished = { skipNextSong() }`, fired from the last buffer's completion callback | `Services/AudioPlaybackService.swift:47-49` → `AudioEngines/AppleAudioEngine.swift:152-156` |
+| 1 | `engine.onPlaybackFinished = { skipNextSong() }`, fired from the last buffer's completion callback | `Services/AudioPlaybackService.swift:47-49` → `AudioEngines/AppleAudioEngine.swift:213-236` |
 | 2 | the 0.2 s timer checks `currentTime >= duration && duration > 0` | `Services/AudioPlaybackService.swift:134-136` |
 
 Both are live simultaneously, neither records that an advance is in progress, and `skipNextSong` (`:178-203`) is not re-entrant. `stopTimer()` at `:179` cancels the pending timer fire, which hides the collision in the common case — but only for mechanism 2, and only if the callback had not already been dispatched.
 
-**The concrete failure: mechanism 1's guard is checked on the wrong queue.** The completion handler checks `isUserStopped` on `audioQueue` (`AppleAudioEngine.swift:144`) and then hops to the main queue to run the action (`:154`) **with no second check**. A completion callback that was already past the guard when the user pressed Next will therefore call `skipNextSong()` *after* the replacement track has started, skipping it. The window is real because `stop()` sets `isUserStopped = true` (`AppleEngines/AppleAudioEngine.swift:227`) but **does not clear `onPlaybackFinished`**, and `play()` reassigns that closure for the *new* track (`:47`) before the stale callback lands.
+**The concrete failure: mechanism 1's guard is checked on the wrong queue.** The completion handler checks `isUserStopped` on `audioQueue` (`AppleAudioEngine.swift:228`) and then hops to the main queue to run the action (`:238`) **with no second check**. A completion callback that was already past the guard when the user pressed Next will therefore call `skipNextSong()` *after* the replacement track has started, skipping it. The window is real because `stop()` sets `isUserStopped = true` (`AppleEngines/AppleAudioEngine.swift:318`) but **does not clear `onPlaybackFinished`**, and each track's `load()` reassigns that closure for the *new* track (`Services/AudioPlaybackService.swift:47`, `Services/AudioEngineService.swift:57`) before the stale callback lands.
 
 Two further problems with mechanism 2:
 
-- **It compares two different clocks.** The left side is `engine.currentTime`, derived from `playerNode.playerTime(forNodeTime:)` (`AudioEngines/AppleAudioEngine.swift:36-40`) — a *rendered-position* clock. The right side is `manager.duration`, which is the **import-time metadata** duration (`AudioPlaybackService.swift:58` ← `AudioFile.audioDuration`). Any drift between the two makes the check fire early, cutting the track off, or never fire at all.
+- **It compares two different clocks.** The left side is `engine.currentTime`, derived from `playerNode.playerTime(forNodeTime:)` (`AudioEngines/AppleAudioEngine.swift:37-41`) — a *rendered-position* clock. The right side is `manager.duration`, which is the **import-time metadata** duration (`AudioPlaybackService.swift:58` ← `AudioFile.audioDuration`). Any drift between the two makes the check fire early, cutting the track off, or never fire at all.
 - **It is unreliable exactly where auto-advance matters most.** `Timer.scheduledTimer` (`:119`) runs in the default run-loop mode, so it does not fire while the user is scrolling or dragging, and it is throttled once the app is backgrounded. In the background, mechanism 1 is the *only* path that works.
 
 `isLooping` is consulted by neither mechanism mid-queue — see the corrected [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue).
@@ -1357,6 +1358,69 @@ Three further defects in the same handlers, which apply even when registration s
 - **Ruled out:** "the handler is registered but the queue is empty." That would be a different symptom, and the same report would appear on **every** skip rather than *sometimes*.
 - **Checked, and worth stating explicitly so nobody re-checks it:** the interruption observer does **not** share this failure path. `setupInterruptionObserver()` is a separate call at `audio_manager.swift:98`, outside the `do`, so a thrown `setActive` skips remote-command registration but leaves interruptions handled normally. [E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing) therefore has an independent trigger — do not merge the two investigations.
 - **To confirm:** log a line on entry to `setupRemoteTransportControls`, and log the session error with its domain and code. If the line is missing on the affected launches, the `try` threw. Then verify the `playCommand` inversion independently — it should reproduce 100% of the time and is the easier of the two to confirm.
+
+### E17 Every track whose rate differs from the audio session was played slow or fast *and* detuned by the same ratio
+
+**High — fixed.**
+
+> **User report:** *"the audio playback is a bit slower and pitched down than the originals"*, and issue #66, *"Occasionally songs play with dropped pitch but is still set at 0pt change."*
+
+The cause was **two independent rate-pinning mechanisms, not one**, and fixing only the first moved the mismatch downstream without changing the symptom.
+
+**1 — `format: nil` pinned the player node.** `setupAudioEngine` built the graph in `init()`, **before any file existed**:
+
+```swift
+// AudioEngines/AppleAudioEngine.swift:79-80, still how the graph is seeded
+audioEngine.connect(playerNode, to: timePitch, format: nil)
+audioEngine.connect(timePitch, to: audioEngine.mainMixerNode, format: nil)
+```
+
+`format: nil` resolves the player node's output format from the audio session's rate, and **that format is fixed for the life of the node**. Buffers, meanwhile, were built in the file's own `processingFormat` (`:195`), and `AVAudioPlayerNode` inserts **no** sample-rate converter. So any file whose rate differed from the session rate had its frames consumed at the node's rate instead.
+
+**2 — and this is the half that is easy to miss: `AVAudioUnitTimePitch` pins its *own* output rate and does not follow its input.** It is not a transparent pass-through that inherits whatever the player produces. Reconnecting `playerNode → timePitch` in the file's format therefore leaves the unit rendering at the rate it was first connected with:
+
+| | player node | time-pitch unit | result |
+|---|---|---|---|
+| `format: nil` on both edges | 44100 (session-pinned) | 44100 | the file's rate ignored entirely |
+| player edge reconnected only | 48000 ✅ | **44100** ❌ | mismatch relocated — **same audible symptom** |
+| **both edges reconnected** | 48000 ✅ | **48000** ✅ | correct |
+
+So the unit was never innocent; it was the prime mover. It merely *reads* as innocent because `timePitch.rate` and `.pitch` sit at exactly `1.0` and `0.0` throughout — which is precisely why #66's reporter saw "0pt change" and could find nothing wrong with the pitch control. The corruption was upstream of the controls, in the format the unit was connected with.
+
+Both `timePitch.inputFormat(forBus: 0)` and `.outputFormat(forBus: 0)` report the connect-time rate, and **neither updates until both edges are reconnected**. That junction is therefore the invariant to guard on — and checking `playerNode` instead is exactly what let the one-edge version pass its own test.
+
+**Measured**, 440 Hz tone rendered offline through this exact graph, varying only the node's format:
+
+| file | node format | 440 Hz in | ratio | result |
+|---|---|---|---|---|
+| 48 kHz | 44.1 kHz (session-pinned) | 404.6 Hz | 0.9195× | **−145 cents** |
+| 48 kHz | 48 kHz (both edges reconnected per file) | 440.4 Hz | 1.0008× | **+1 cent** |
+| 44.1 kHz | 44.1 kHz | 441.0 Hz | 1.0023× | +4 cents |
+
+The second and third rows are the fixed state; only the connected format differs between rows one and two.
+
+**Why it looked intermittent**, which is the whole of #66's "occasionally": it is the interaction of two variables neither of which the user controls directly — the file's rate and the **negotiated route rate**. A 44.1 kHz route (Bluetooth headphones or an AirPlay receiver that does not offer 48 kHz) detunes every 48 kHz master; a 48 kHz route instead detunes every 44.1 kHz CD rip, by the mirror +147 cents. A library holding both rates therefore misbehaves on some tracks and not others. The reporter's answer — *slower and down* — pins their route at 44.1 kHz and means their 44.1 kHz rips were always fine.
+
+**Two things made this survive for so long.** `warmupTimePitch` compounded it by scheduling its silent warm-up buffer in the **mixer's** format, pinning the hardware rate a second time and independently of the `nil` connection. And the engine is built once — `AudioEngineService.initialiseEngine()` (`Services/AudioEngineService.swift:11`) is called from `audio_manager.swift:126` and never again — so the wrong format was chosen before the first track loaded and survived every subsequent one. The same reasoning makes a **route change** a latent second trigger: the node stayed on whatever rate was negotiated at launch, so connecting a 44.1 kHz headset mid-session detuned a library that had been playing correctly.
+
+**Fix.** Reconnect **both** edges in the file's own format on every load, so `mainMixerNode` performs the conversion to whatever the hardware is doing. `reconfigureGraphIfNeeded(for:)` (`:118`) guards on `timePitch.inputFormat(forBus: 0)` — the junction, and the one format that was silently wrong — then disconnects `playerNode` **and** `timePitch` (the second disconnect is required: reconnecting a live bus raises) and re-establishes both connections before `prepare()`. It returns immediately when rate and channel count already match, so the common case costs one comparison and never pays an engine stop/start; where a restart *is* needed it rides on the track boundary `AudioPlaybackService.load` (`Services/AudioPlaybackService.swift:20-61`) has already created, so it adds no audible gap. `load()` (`:259`) calls it before anything is scheduled. `warmupTimePitchIfNeeded()` (`:168`) is the old warm-up, moved out of `init()`, run once, and reading the **player's** format instead of the mixer's. A `#if DEBUG` line reports every reconfiguration, so #66 stops being intermittent-and-unexplained.
+
+**Tempo and pitch are unaffected**, which was a design constraint rather than a happy accident. `rate` and `pitch` are properties of the unit, not of its connections, so re-establishing them per file loses nothing; `AudioPlaybackService.load` re-asserts both after every `engine.load()` regardless. Verified directly: tempo 1.25/pitch +200 on a 48 kHz track, then a rate-changing track change, then a reset to unity, then tempo 0.8/pitch −300 on a mono file — all held, with audio confirmed flowing through a live analyser tap at each stage.
+
+**Verified against the real class**, not a reimplementation: `player == time-pitch in == time-pitch out == file` across interleaved `44100, 48000, 44100, 48000, 44100` and across mono and stereo, while `mainMixerNode`'s output stayed pinned at the hardware rate and a live tap kept receiving callbacks throughout (63 observed). The check was confirmed to discriminate rather than merely pass: run unchanged against the one-edge version it fails 4 of 9 cases, and the engine then refuses to restart at all with `-10868` (`AUGraphParser::InitializeActiveNodesInOutputChain`). A passing test that cannot fail is what produced the first version of this fix, so this one was checked in both directions.
+
+**Also fixed here:** `duration` (`:46`) divided `file.length` by `fileFormat.sampleRate`, but `file.length` counts frames in the **processing** format — `seek` (`:328`) already used `processingFormat` correctly. These agree for WAV and diverge whenever the decoder up-samples, HE-AAC being the common case (encodes at 22.05/24 kHz, decodes to 44.1/48 kHz), which reports roughly double the real duration. That is a second, independent clock disagreeing with the first; see also the two-clocks problem in [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song).
+
+**Exploration notes.**
+- **Ruled out:** "the tempo or pitch setting is wrong." `AudioManager.tempo` and `.pitch` both default to nominal and are not persisted ([C6](#c6-tempo-pitch-and-loop-are-not-persisted)); both were verified at `1.0`/`0.0` in the harness. "Slower *and* pitched down together" is only ever a resampling ratio — no pitch control produces both at once, and pitch alone would preserve duration.
+- **Ruled out:** "the import mangled the files." Import only ever *reads* `processingFormat.sampleRate` to compute a duration (`Services/LibraryImportPipeline.swift:693`) and stores it. Nothing rewrites or resamples audio; `AudioImportService` only ever `copyItem`/`moveItem`s. The reported symptom is a playback fault, and the corrupt-rate path has exactly one location: the node connections.
+- **Ruled out:** "the pitch algorithm picker chose a bad engine." Only `.apple` is implemented and it is the default (`Services/AudioEngineService.swift:11-19`); the other cases set `currentEngine = nil`, which stops playback entirely rather than detuning it.
+- **Ruled out — and this one was wrong the first time.** An earlier draft of this entry concluded "the time-pitch unit is innocent" and that it "could not be removed to test this, because `AVAudioUnitTimePitch` cannot render in manual-rendering mode (`-10874`), so the harness measures the player → mixer edge". That reasoning measured a path **the app does not use**: dropping the unit removed the very node that was holding the wrong rate, so the harness proved the *absence* of the bug rather than its absence from the graph. The only check that discriminates is a format assertion against the real class, which is what finally located the second pinning mechanism.
+- **Not a defect, checked because it looks like one:** `bufferFrameCapacity`'s `if == 0` latch (`:154`) is correct. Both `load()` (`:272`) and `stop()` (`:322`) already reset it, so each file is sized from its own rate. An earlier draft flagged this as a cache-across-files bug; it is not.
+- **Resolved — the mono abort risk is retired.** A mono file on a stereo-connected graph aborts with `required condition is false: _outputFormat.channelCount == buffer.format.channelCount`, an uncatchable exception rather than a detune. This was flagged here as *unverified and deliberately not claimed*. It no longer arises: because the fix now matches **channel count** as well as rate on the edge that matters, the player and the unit both go to 1ch for a mono file while `mainMixerNode` stays 2ch, and mono was verified end to end at both 44100 and 48000 Hz. If a mono track ever does crash playback, that would be a different mechanism and deserves its own entry.
+- **Checked because the fix touches a live tap:** the analyser holds a tap on `mainMixerNode` for the whole session, and reconnection happens underneath it. Verified unaffected — `mainMixerNode`'s output format stays at the hardware rate however the edges above it are connected, and callbacks keep arriving across interleaved rate changes. `installTapSafely`'s `removeTap`-then-`installTap` on a running engine was exercised directly for five cycles with no fault.
+- **To confirm on device:** play a 44.1 kHz CD rip and a 48 kHz master on the same route. Both should now be in tune; before the fix the first was clean and the second sat about a semitone and a half flat.
+- **Still open, and now better isolated by this fix:** [E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing) and [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block) both concern the session and the published state, and neither was involved here. E17 was audible in normal playback, which is what finally made it a bug report rather than a mystery.
 
 ---
 
@@ -1608,6 +1672,10 @@ That left `tunnelPalette` with no callers, plus `e` and `tint` unused — three 
 8. [B7](#b7-processpendingimports-deletes-the-whole-directory) · [B6](#b6-unsynchronised-fileurlsappend-in-the-extension) — the extension side was rewritten by `laptop` to write one inbound file per share; the app-side consumer is now `LibraryImportPipeline`, so re-verify both before closing
 
 **Phase 3 — make the audio thread correct.**
+
+> **~~[E17](#e17-every-track-whose-rate-differs-from-the-audio-session-was-played-slow-or-fast-and-detuned-by-the-same-ratio)~~ — fixed**, and it belongs in this phase by severity but not by kind: it was never a threading fault, it was a format-negotiation fault in the engine graph. `AVAudioPlayerNode` was connected with `format: nil` before any file loaded, which pinned it to the audio session's rate for the life of a once-per-session engine, and the node inserts no sample-rate converter. Measured −145 cents on a 48 kHz file over a 44.1 kHz route. It was invisible to every other check here because nothing in the register had ever looked at `AVAudioFormat`, and because the reported symptom pointed at the pitch control, which was at unity throughout.
+>
+> Worth keeping as a cautionary note: **the first fix for this removed only one of two causes** and shipped with the symptom unchanged. `AVAudioUnitTimePitch` pins its own output rate at connect time and does not follow its input, so reconnecting the player edge alone just moved the mismatch one node downstream — and, because the guard read `playerNode`, the incomplete fix passed its own test. Any future work that changes how a node is connected should assert the format of *every* node in the chain, not the one you changed.
 
 9. [E1](#e1-rt-thread-allocates-19-mbs) + [E2](#e2-rt-closure-calls-a-main-actor-method) together
 10. [E4](#e4-the-generation-cancellation-gate-is-never-wired-up) · [E3](#e3-mach_timebase_info-on-every-tap-callback) · [E5](#e5-withcheckedthrowingcontinuation-can-trap)
