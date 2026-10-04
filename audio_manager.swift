@@ -319,8 +319,18 @@ class AudioManager: NSObject, ObservableObject {
         playlistService.addAudioFile(audioFile, to: playlist)
     }
 
+    /// The batch form. One `savePlaylists()` for the whole selection — see
+    /// `PlaylistService.addAudioFiles`.
+    func addAudioFiles(_ audioFiles: [AudioFile], to playlist: Playlist) {
+        playlistService.addAudioFiles(audioFiles, to: playlist)
+    }
+
     func removeAudioFile(_ audioFile: AudioFile, from playlist: Playlist) {
         playlistService.removeAudioFile(audioFile, from: playlist)
+    }
+
+    func removeAudioFiles(_ audioFiles: [AudioFile], from playlist: Playlist) {
+        playlistService.removeAudioFiles(audioFiles, from: playlist)
     }
 
     func getAudioFiles(for playlist: Playlist) -> [AudioFile] {

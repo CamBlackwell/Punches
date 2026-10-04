@@ -454,9 +454,7 @@ struct AlbumDetailView: View {
             if let album {
                 ForEach(transferTargets(excluding: album)) { target in
                     Button(target.name) {
-                        for file in selectedSongsInAlbumOrder {
-                            audioManager.addAudioFile(file, to: target)
-                        }
+                        audioManager.addAudioFiles(selectedSongsInAlbumOrder, to: target)
                     }
                 }
             }
@@ -480,9 +478,7 @@ struct AlbumDetailView: View {
             Button("Cancel", role: .cancel) {}
             Button("Remove", role: .destructive) {
                 if let album {
-                    for file in selectedSongsInAlbumOrder {
-                        audioManager.removeAudioFile(file, from: album)
-                    }
+                    audioManager.removeAudioFiles(selectedSongsInAlbumOrder, from: album)
                 }
                 selectedFileIDs.removeAll()
                 isMultiSelectMode = false
@@ -641,9 +637,13 @@ struct AddSongsToAlbumSheet: View {
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Add \(selectedIDs.count)") {
-                        for audioFile in candidates where selectedIDs.contains(audioFile.id) {
-                            audioManager.addAudioFile(audioFile, to: album)
-                        }
+                        // In `candidates` order, not `selectedIDs` order: the
+                        // latter is a `Set`, so iterating it would add the songs
+                        // in an arbitrary order.
+                        audioManager.addAudioFiles(
+                            candidates.filter { selectedIDs.contains($0.id) },
+                            to: album
+                        )
                         dismiss()
                     }
                     .tint(theme.accentColor)

@@ -243,18 +243,70 @@ final class PlaylistService {
         savePlaylists()
     }
 
-    func addAudioFile(_ audioFile: AudioFile, to playlist: Playlist) {
-        guard let index = manager.playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
-        if !manager.playlists[index].audioFileIDs.contains(audioFile.id) {
-            manager.playlists[index].audioFileIDs.append(audioFile.id)
-            savePlaylists()
+    /// Adds songs to a collection and persists **once**.
+    ///
+    /// The single-song method used to be the only way in, so every batch
+    /// affordance — the add-songs sheet, the multi-select menus — was a loop
+    /// around it, and it saved on every iteration. A save is not a small write:
+    /// `savePlaylists()` reaches `LibraryStore.persist`, which mirrors the *whole*
+    /// library — every track is upserted and anything absent is pruned. Adding
+    /// 100 songs to an album therefore rewrote the entire library 100 times, on
+    /// the main actor, while the sheet was still up. See
+    /// [14 · C19](14-known-issues.md).
+    ///
+    /// Duplicates are skipped rather than rejected, matching the single-song
+    /// behaviour: membership is an ordered set the caller appends to, and the
+    /// add-songs sheet's candidate list is already filtered to exclude members.
+    /// Order is preserved — songs land in the order they were handed over, which
+    /// is what lets a caller pass a selection in the order the user saw it.
+    func addAudioFiles(_ audioFiles: [AudioFile], to playlist: Playlist) {
+        guard !audioFiles.isEmpty,
+              let index = manager.playlists.firstIndex(where: { $0.id == playlist.id })
+        else { return }
+
+        var members = manager.playlists[index].audioFileIDs
+        // What is already there, so appending N songs to an album of M is
+        // O(N + M) rather than O(N × M).
+        var present = Set(members)
+        var added = false
+
+        for audioFile in audioFiles where present.insert(audioFile.id).inserted {
+            members.append(audioFile.id)
+            added = true
         }
+
+        guard added else { return }
+        manager.playlists[index].audioFileIDs = members
+        savePlaylists()
+    }
+
+    func addAudioFile(_ audioFile: AudioFile, to playlist: Playlist) {
+        addAudioFiles([audioFile], to: playlist)
+    }
+
+    /// Removes songs from a collection and persists **once**, for the same reason
+    /// as `addAudioFiles`.
+    ///
+    /// `removeAll { … }` rather than `removeAll(where:)` because the collection is
+    /// an array of ids and membership is a set: the same song must go even if it
+    /// somehow appears twice.
+    func removeAudioFiles(_ audioFiles: [AudioFile], from playlist: Playlist) {
+        guard !audioFiles.isEmpty,
+              let index = manager.playlists.firstIndex(where: { $0.id == playlist.id })
+        else { return }
+
+        var members = manager.playlists[index].audioFileIDs
+        let doomed = Set(audioFiles.map(\.id))
+        let before = members.count
+        members.removeAll { doomed.contains($0) }
+        guard members.count != before else { return }
+
+        manager.playlists[index].audioFileIDs = members
+        savePlaylists()
     }
 
     func removeAudioFile(_ audioFile: AudioFile, from playlist: Playlist) {
-        guard let index = manager.playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
-        manager.playlists[index].audioFileIDs.removeAll { $0 == audioFile.id }
-        savePlaylists()
+        removeAudioFiles([audioFile], from: playlist)
     }
 
     func getAudioFiles(for playlist: Playlist) -> [AudioFile] {

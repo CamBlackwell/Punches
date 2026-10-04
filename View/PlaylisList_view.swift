@@ -167,9 +167,7 @@ struct PlaylistDetailView: View {
         .confirmationDialog("Add to Playlist", isPresented: $showingBatchPlaylistMenu) {
             ForEach(transferTargets) { otherPlaylist in
                 Button(otherPlaylist.name) {
-                    for file in selectedSongsInPlaylistOrder {
-                        audioManager.addAudioFile(file, to: otherPlaylist)
-                    }
+                    audioManager.addAudioFiles(selectedSongsInPlaylistOrder, to: otherPlaylist)
                 }
             }
             Button("Cancel", role: .cancel) { }
@@ -193,11 +191,7 @@ struct PlaylistDetailView: View {
         .alert("Remove from Playlist", isPresented: $showingBatchRemoveAlert) {
             Button("Cancel", role: .cancel) { }
             Button("Remove", role: .destructive) {
-                for fileID in selectedFileIDs {
-                    if let file = audioManager.audioFiles.first(where: { $0.id == fileID }) {
-                        audioManager.removeAudioFile(file, from: playlist)
-                    }
-                }
+                audioManager.removeAudioFiles(selectedSongsInPlaylistOrder, from: playlist)
                 selectedFileIDs.removeAll()
                 isMultiSelectMode = false
             }
