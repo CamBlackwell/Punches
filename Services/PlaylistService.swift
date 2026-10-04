@@ -217,10 +217,18 @@ final class PlaylistService {
         }
     }
 
-    func createPlaylist(name: String, isAlbum: Bool = false, artist: String? = nil) {
+    /// Creates a collection and persists it.
+    ///
+    /// Returns the new playlist so a caller can fill it in the same turn. "Add
+    /// this selection to a new album" needs the row it just created, and finding
+    /// it again by name would be ambiguous the moment two collections share a
+    /// name — which the Albums page allows.
+    @discardableResult
+    func createPlaylist(name: String, isAlbum: Bool = false, artist: String? = nil) -> Playlist {
         let newPlaylist = Playlist(name: name, isAlbum: isAlbum, artist: artist)
         manager.playlists.append(newPlaylist)
         savePlaylists()
+        return newPlaylist
     }
 
     func deletePlaylist(_ playlist: Playlist) {

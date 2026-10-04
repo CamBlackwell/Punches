@@ -26,8 +26,8 @@ struct ContentView: View {
     @State private var artworkTarget: ArtworkTarget?
     @State private var isMultiSelectMode = false
     @State private var selectedFileIDs: Set<UUID> = []
-    @State private var showingBatchPlaylistMenu = false
-    @State private var showingBatchDeleteAlert = false
+    @State private var showingNewPlaylistFromSelection = false
+    @State private var showingNewAlbumFromSelection = false
     @State private var showingSettings = false
     @State private var searchText: String = ""
     @State var tabCircleButtonPressed = false
@@ -84,12 +84,12 @@ struct ContentView: View {
                 audioManager: audioManager
             )
             .applyAlerts(
-                showingBatchPlaylistMenu: $showingBatchPlaylistMenu,
-                showingBatchDeleteAlert: $showingBatchDeleteAlert,
                 showingCreatePlaylistAlert: $showingCreatePlaylistAlert,
                 showingCreateAlbumAlert: $showingCreateAlbumAlert,
                 newAlbumName: $newAlbumName,
                 newAlbumArtist: $newAlbumArtist,
+                showingNewPlaylistFromSelection: $showingNewPlaylistFromSelection,
+                showingNewAlbumFromSelection: $showingNewAlbumFromSelection,
                 showingRenameAlert: $showingRenameAlert,
                 showingRenamePlaylistAlert: $showingRenamePlaylistAlert,
                 newPlaylistName: $newPlaylistName,
@@ -98,7 +98,6 @@ struct ContentView: View {
                 renamingAudioFile: $renamingAudioFile,
                 renamingPlaylist: $renamingPlaylist,
                 selectedFileIDs: $selectedFileIDs,
-                isMultiSelectMode: $isMultiSelectMode,
                 audioManager: audioManager
             )
             .onChange(of: navigateToPlayer) { _, newValue in
@@ -247,6 +246,8 @@ struct ContentView: View {
                     selectedFileIDs: $selectedFileIDs,
                     showingFilePicker: $showingFilePicker,
                     isScrolledDown: $isScrolledDown,
+                    showingNewPlaylistFromSelection: $showingNewPlaylistFromSelection,
+                    showingNewAlbumFromSelection: $showingNewAlbumFromSelection,
                     songs: filteredSongs
                 )
             }
@@ -711,12 +712,12 @@ extension View {
     }
 
     func applyAlerts(
-        showingBatchPlaylistMenu: Binding<Bool>,
-        showingBatchDeleteAlert: Binding<Bool>,
         showingCreatePlaylistAlert: Binding<Bool>,
         showingCreateAlbumAlert: Binding<Bool>,
         newAlbumName: Binding<String>,
         newAlbumArtist: Binding<String>,
+        showingNewPlaylistFromSelection: Binding<Bool>,
+        showingNewAlbumFromSelection: Binding<Bool>,
         showingRenameAlert: Binding<Bool>,
         showingRenamePlaylistAlert: Binding<Bool>,
         newPlaylistName: Binding<String>,
@@ -725,49 +726,9 @@ extension View {
         renamingAudioFile: Binding<AudioFile?>,
         renamingPlaylist: Binding<Playlist?>,
         selectedFileIDs: Binding<Set<UUID>>,
-        isMultiSelectMode: Binding<Bool>,
         audioManager: AudioManager
     ) -> some View {
         self
-            .confirmationDialog(
-                "Add to Playlist",
-                isPresented: showingBatchPlaylistMenu
-            ) {
-                let playlists = audioManager.sortedPlaylists
-                ForEach(playlists) { playlist in
-                    Button(playlist.name) {
-                        for fileID in selectedFileIDs.wrappedValue {
-                            if let file = audioManager.audioFiles.first(where: {
-                                $0.id == fileID
-                            }) {
-                                audioManager.addAudioFile(file, to: playlist)
-                            }
-                        }
-                    }
-                }
-                Button("Cancel", role: .cancel) {}
-            }
-            .alert(
-                "Delete Selected Files",
-                isPresented: showingBatchDeleteAlert
-            ) {
-                Button("Cancel", role: .cancel) {}
-                Button("Delete", role: .destructive) {
-                    for fileID in selectedFileIDs.wrappedValue {
-                        if let file = audioManager.audioFiles.first(where: {
-                            $0.id == fileID
-                        }) {
-                            audioManager.deleteAudioFile(file)
-                        }
-                    }
-                    selectedFileIDs.wrappedValue.removeAll()
-                    isMultiSelectMode.wrappedValue = false
-                }
-            } message: {
-                Text(
-                    "Are you sure you want to delete \(selectedFileIDs.wrappedValue.count) file(s)? This action cannot be undone."
-                )
-            }
             .alert("New Playlist", isPresented: showingCreatePlaylistAlert) {
                 TextField("Playlist Name", text: newPlaylistName)
                 Button("Cancel", role: .cancel) {}
@@ -844,6 +805,101 @@ extension View {
                     Text("Enter a new name for '\(playlist.name)'")
                 }
             }
+            .applyNewFromSelectionAlerts(
+                showingNewPlaylistFromSelection: showingNewPlaylistFromSelection,
+                showingNewAlbumFromSelection: showingNewAlbumFromSelection,
+                newPlaylistName: newPlaylistName,
+                newAlbumName: newAlbumName,
+                newAlbumArtist: newAlbumArtist,
+                selectedFileIDs: selectedFileIDs,
+                audioManager: audioManager
+            )
+    }
+
+    /// "New playlist/album from the current selection".
+    ///
+    /// Its own method rather than two more links in `applyAlerts`' chain: at
+    /// seven `.alert` modifiers the single expression overtook the type-checker's
+    /// budget, and the compiler's answer to that is an error rather than a slow
+    /// build. Splitting is also the honest grouping — these two exist because the
+    /// multi-select menu could only ever add to a collection that already
+    /// existed, which is a different reason from the toolbar's "New Album".
+    ///
+    /// The name fields are the same `newPlaylistName` / `newAlbumName` /
+    /// `newAlbumArtist` state the toolbar alerts bind. That is safe because
+    /// whichever alert is up is modal, so there is never a second writer, and
+    /// every path resets the fields when it closes.
+    private func applyNewFromSelectionAlerts(
+        showingNewPlaylistFromSelection: Binding<Bool>,
+        showingNewAlbumFromSelection: Binding<Bool>,
+        newPlaylistName: Binding<String>,
+        newAlbumName: Binding<String>,
+        newAlbumArtist: Binding<String>,
+        selectedFileIDs: Binding<Set<UUID>>,
+        audioManager: AudioManager
+    ) -> some View {
+        self
+            .alert(
+                "New Playlist from Selection",
+                isPresented: showingNewPlaylistFromSelection
+            ) {
+                TextField("Playlist Name", text: newPlaylistName)
+                Button("Cancel", role: .cancel) {
+                    newPlaylistName.wrappedValue = ""
+                }
+                Button("Create") {
+                    let name = newPlaylistName.wrappedValue
+                    guard !name.isEmpty else { return }
+                    let playlist = audioManager.createPlaylist(name: name)
+                    audioManager.addAudioFiles(
+                        libraryOrderedSelection(
+                            for: selectedFileIDs.wrappedValue,
+                            in: audioManager
+                        ),
+                        to: playlist
+                    )
+                    newPlaylistName.wrappedValue = ""
+                    selectedFileIDs.wrappedValue.removeAll()
+                }
+            } message: {
+                Text(
+                    "Adds \(selectedFileIDs.wrappedValue.count) selected song(s) to the new playlist."
+                )
+            }
+            .alert(
+                "New Album from Selection",
+                isPresented: showingNewAlbumFromSelection
+            ) {
+                TextField("Album Name", text: newAlbumName)
+                TextField("Artist (optional)", text: newAlbumArtist)
+                Button("Cancel", role: .cancel) {
+                    newAlbumName.wrappedValue = ""
+                    newAlbumArtist.wrappedValue = ""
+                }
+                Button("Create") {
+                    let name = newAlbumName.wrappedValue
+                    guard !name.isEmpty else { return }
+                    let artist = newAlbumArtist.wrappedValue
+                    let album = audioManager.createAlbum(
+                        name: name,
+                        artist: artist.isEmpty ? nil : artist
+                    )
+                    audioManager.addAudioFiles(
+                        libraryOrderedSelection(
+                            for: selectedFileIDs.wrappedValue,
+                            in: audioManager
+                        ),
+                        to: album
+                    )
+                    newAlbumName.wrappedValue = ""
+                    newAlbumArtist.wrappedValue = ""
+                    selectedFileIDs.wrappedValue.removeAll()
+                }
+            } message: {
+                Text(
+                    "Adds \(selectedFileIDs.wrappedValue.count) selected song(s) to the new album, in library order."
+                )
+            }
     }
 }
 
@@ -861,10 +917,13 @@ struct SongsListView: View {
     @Binding var selectedFileIDs: Set<UUID>
     @Binding var showingFilePicker: Bool
     @Binding var isScrolledDown: Bool
+    /// Raised by `MultiSelectContextMenu` and presented by `ContentView`, which
+    /// owns the name fields for every "new collection" alert.
+    @Binding var showingNewPlaylistFromSelection: Bool
+    @Binding var showingNewAlbumFromSelection: Bool
     @Environment(\.editMode) private var editMode
     @State private var showingShareSheet = false
     @State private var shareURLs: [URL] = []
-    @State private var showingBatchPlaylistMenu = false
     @State private var showingBatchDeleteAlert = false
     let songs: [AudioFile]
     var sortedSongs: [AudioFile] { songs }
@@ -898,8 +957,9 @@ struct SongsListView: View {
                     artworkTarget: $artworkTarget,
                     isMultiSelectMode: isMultiSelectMode,
                     selectedFileIDs: $selectedFileIDs,
-                    showingBatchPlaylistMenu: $showingBatchPlaylistMenu,
-                    showingBatchDeleteAlert: $showingBatchDeleteAlert
+                    showingBatchDeleteAlert: $showingBatchDeleteAlert,
+                    showingNewPlaylistFromSelection: $showingNewPlaylistFromSelection,
+                    showingNewAlbumFromSelection: $showingNewAlbumFromSelection
                 )
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
@@ -961,26 +1021,6 @@ struct SongsListView: View {
             } as (() -> Void)
         ) {
             ShareSheet(activityItems: shareURLs)
-        }
-        .confirmationDialog(
-            "Add to Playlist",
-            isPresented: $showingBatchPlaylistMenu
-        ) {
-            let playlists = audioManager.sortedPlaylists
-            ForEach(playlists) { playlist in
-                Button(playlist.name) {
-                    for fileID in selectedFileIDs {
-                        if let file = audioManager.audioFiles.first(where: {
-                            $0.id == fileID
-                        }) {
-                            audioManager.addAudioFile(file, to: playlist)
-                        }
-                    }
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Add \(selectedFileIDs.count) song(s) to playlist")
         }
         .alert("Delete Selected Files", isPresented: $showingBatchDeleteAlert) {
             Button("Cancel", role: .cancel) {}
@@ -1349,8 +1389,9 @@ struct AudioFileButton: View {
     @Binding var artworkTarget: ArtworkTarget?
     var isMultiSelectMode: Bool = false
     @Binding var selectedFileIDs: Set<UUID>
-    @Binding var showingBatchPlaylistMenu: Bool
     @Binding var showingBatchDeleteAlert: Bool
+    @Binding var showingNewPlaylistFromSelection: Bool
+    @Binding var showingNewAlbumFromSelection: Bool
 
     var body: some View {
         Button {
@@ -1397,8 +1438,9 @@ struct AudioFileButton: View {
                         showingShareSheet: $showingShareSheet,
                         shareURLs: $shareURLs,
                         artworkTarget: $artworkTarget,
-                        showingBatchPlaylistMenu: $showingBatchPlaylistMenu,
-                        showingBatchDeleteAlert: $showingBatchDeleteAlert
+                        showingBatchDeleteAlert: $showingBatchDeleteAlert,
+                        showingNewPlaylistFromSelection: $showingNewPlaylistFromSelection,
+                        showingNewAlbumFromSelection: $showingNewAlbumFromSelection
                     )
                 } else {
                     AudioFileContextMenu(
@@ -1417,14 +1459,33 @@ struct AudioFileButton: View {
     }
 }
 
+/// The selection in library order.
+///
+/// `selectedFileIDs` is a `Set`, so iterating it directly yields an arbitrary
+/// order — and that order then becomes the order the songs sit in inside the
+/// collection they were added to. Every batch-add path resolves the selection
+/// through here, so the order the user saw on screen is the order they get.
+func libraryOrderedSelection(
+    for ids: Set<UUID>,
+    in audioManager: AudioManager
+) -> [AudioFile] {
+    audioManager.displayedSongs.filter { ids.contains($0.id) }
+}
+
 struct MultiSelectContextMenu: View {
     @ObservedObject var audioManager: AudioManager
     let selectedFileIDs: Set<UUID>
     @Binding var showingShareSheet: Bool
     @Binding var shareURLs: [URL]
     @Binding var artworkTarget: ArtworkTarget?
-    @Binding var showingBatchPlaylistMenu: Bool
     @Binding var showingBatchDeleteAlert: Bool
+    @Binding var showingNewPlaylistFromSelection: Bool
+    @Binding var showingNewAlbumFromSelection: Bool
+
+    /// The selection in library order — see `libraryOrderedSelection(for:in:)`.
+    private var selectedSongs: [AudioFile] {
+        libraryOrderedSelection(for: selectedFileIDs, in: audioManager)
+    }
 
     var body: some View {
         Button(
@@ -1442,11 +1503,54 @@ struct MultiSelectContextMenu: View {
             artworkTarget = .multipleFiles(selectedFileIDs)
         }
 
+        // Two menus rather than one confirmation dialog listing every collection.
+        //
+        // The dialog this replaced listed `sortedPlaylists` and nothing else, so
+        // an album could not be a batch-add target from the Songs tab at all —
+        // even though both detail views list playlists *and* albums. That is the
+        // inconsistency `docs/08` §9 warns about, and a submenu per kind is also
+        // what the single-song menu already does, so this is now one shape rather
+        // than two.
+        Menu {
+            ForEach(audioManager.sortedPlaylists) { playlist in
+                Button(playlist.name) {
+                    audioManager.addAudioFiles(selectedSongs, to: playlist)
+                }
+            }
+        } label: {
+            Label(
+                "Add \(selectedFileIDs.count) to Playlist",
+                systemImage: "text.badge.plus"
+            )
+        }
+        .disabled(audioManager.sortedPlaylists.isEmpty)
+
+        Menu {
+            ForEach(audioManager.sortedAlbums) { album in
+                Button(album.name) {
+                    audioManager.addAudioFiles(selectedSongs, to: album)
+                }
+            }
+        } label: {
+            Label(
+                "Add \(selectedFileIDs.count) to Album",
+                systemImage: "square.stack"
+            )
+        }
+        .disabled(audioManager.sortedAlbums.isEmpty)
+
         Button(
-            "Add \(selectedFileIDs.count) to Playlist",
-            systemImage: "text.badge.plus"
+            "New Playlist from Selection",
+            systemImage: "plus.rectangle.on.folder"
         ) {
-            showingBatchPlaylistMenu = true
+            showingNewPlaylistFromSelection = true
+        }
+
+        Button(
+            "New Album from Selection",
+            systemImage: "plus.rectangle.on.folder"
+        ) {
+            showingNewAlbumFromSelection = true
         }
 
         Button(

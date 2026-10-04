@@ -283,16 +283,24 @@ class AudioManager: NSObject, ObservableObject {
         libraryService.urlForSharing(audioFile)
     }
 
-    func createPlaylist(name: String) {
-        DispatchQueue.main.async { [weak self] in
-            self?.playlistService.createPlaylist(name: name)
-        }
+    /// Creates a collection and returns it — see `PlaylistService.createPlaylist`.
+    ///
+    /// Synchronous. This used to hop through `DispatchQueue.main.async`, which
+    /// deferred the write by a run-loop pass and bought nothing: the target is
+    /// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, so the caller is already on
+    /// the main actor and the write already happens there. The register entry for
+    /// the old `Task.detached` writer called the hop "redundant but harmless";
+    /// returning the row is what actually needed changing.
+    @discardableResult
+    func createPlaylist(name: String) -> Playlist {
+        playlistService.createPlaylist(name: name)
     }
 
-    func createAlbum(name: String, artist: String? = nil) {
-        DispatchQueue.main.async { [weak self] in
-            self?.playlistService.createPlaylist(name: name, isAlbum: true, artist: artist)
-        }
+    /// Creates an album and returns it, so "new album from this selection" can
+    /// add the songs without looking the album up again.
+    @discardableResult
+    func createAlbum(name: String, artist: String? = nil) -> Playlist {
+        playlistService.createPlaylist(name: name, isAlbum: true, artist: artist)
     }
 
     func coverName(for album: Playlist, songs: [AudioFile]) -> String? {
