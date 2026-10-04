@@ -1,1 +1,10 @@
 *.xcuserstate
+
+# Per-user Xcode state. `*.xcuserstate` above was not enough: the other three
+# files in these directories are tracked, and `gitignore` does not apply to a
+# path that is already tracked — so every one of them kept showing up as a
+# modification in unrelated commits. Matches `.gitignore` inside a fresh Xcode
+# project, which is where `*.xcuserstate` came from.
+xcuserdata/
+*.xcuserdatad/
+*.xcworkspace/xcuserdata/
