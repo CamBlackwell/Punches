@@ -21,20 +21,50 @@ final class PlaylistService {
     }
 
     var sortedPlaylists: [Playlist] {
-        sortedCollections.filter { !$0.isAlbum }
+        ordered(unmasteredCollections.filter { !$0.isAlbum })
     }
 
     var sortedAlbums: [Playlist] {
-        sortedCollections.filter { $0.isAlbum }
+        ordered(unmasteredCollections.filter { $0.isAlbum })
     }
 
-    /// Every user collection except the master playlist, newest first. Both
-    /// pages filter this so `__MASTER_SONGS__` can never be rendered, and so
-    /// albums never leak into the Playlists tab.
-    private var sortedCollections: [Playlist] {
-        manager.playlists
-            .filter { $0.id != manager.masterPlaylistID }
-            .sorted { $0.dateAdded > $1.dateAdded }
+    /// Every user collection except the master playlist, in the order both pages
+    /// render it.
+    ///
+    /// Each page takes its own slice of the filtered list and then orders it, so
+    /// a manual position on one page can never shuffle the other. Filtering here
+    /// is what keeps `__MASTER_SONGS__` unrenderable and keeps albums out of the
+    /// Playlists tab.
+    private var unmasteredCollections: [Playlist] {
+        manager.playlists.filter { $0.id != manager.masterPlaylistID }
+    }
+
+    /// Manual position first, then newest first.
+    ///
+    /// `sortOrder` is written only by `moveCollection`, and only for the page it
+    /// was handed, so a page the user has never arranged keeps the date order it
+    /// has always had.
+    ///
+    /// Rows with no position sort *after* positioned ones instead of
+    /// interleaving by date. A half-arranged page is a transient state — one drag
+    /// assigns the whole page — and interleaving would make the not-yet-dragged
+    /// remainder leap around as positions fill in.
+    ///
+    /// A total order, so the result is well defined: position where both sides
+    /// have one and it differs, then the nil/non-nil split, then date.
+    private func ordered(_ collections: [Playlist]) -> [Playlist] {
+        collections.sorted { lhs, rhs in
+            switch (lhs.sortOrder, rhs.sortOrder) {
+            case let (left?, right?) where left != right:
+                return left < right
+            case (nil, _?):
+                return false
+            case (_?, nil):
+                return true
+            default:
+                return lhs.dateAdded > rhs.dateAdded
+            }
+        }
     }
 
     /// `audioFiles` keyed by id, so resolving a collection's members costs one
@@ -190,6 +220,40 @@ final class PlaylistService {
         if manager.playingFromSongsTab {
             manager.playbackQueue = manager.displayedSongs
         }
+    }
+
+    /// Records the user's arrangement of one page.
+    ///
+    /// Renumbers the whole page rather than the moved rows alone: positions have
+    /// to be dense and gap-free, or a later insert cannot be dropped between two
+    /// albums without renumbering everything anyway. The page is a parameter
+    /// instead of being discovered here, so a caller cannot reorder one page
+    /// using another's indices — `AlbumsListView` renders `filteredAlbums`, which
+    /// is a *search result*, and moving against `sortedAlbums` would write one
+    /// album's position to another.
+    ///
+    /// One save for the whole page. Every save mirrors the entire library, so
+    /// renumbering 30 albums one `savePlaylists()` at a time would rewrite the
+    /// library 30 times.
+    func moveCollection(in page: [Playlist], from source: IndexSet, to destination: Int) {
+        guard !page.isEmpty else { return }
+
+        var reordered = page
+        reordered.move(fromOffsets: source, toOffset: destination)
+
+        var changed = false
+        for (position, playlist) in reordered.enumerated() {
+            guard let index = manager.playlists.firstIndex(where: { $0.id == playlist.id })
+            else { continue }
+            let newOrder = Double(position)
+            if manager.playlists[index].sortOrder != newOrder {
+                manager.playlists[index].sortOrder = newOrder
+                changed = true
+            }
+        }
+
+        guard changed else { return }
+        savePlaylists()
     }
 
     func reorderPlaylistSongs(in playlist: Playlist, from source: IndexSet, to destination: Int) {

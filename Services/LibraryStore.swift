@@ -90,6 +90,19 @@ struct PlaylistRecord {
     var isMaster: Bool
     var memberIDs: [UUID]
 
+    /// The user's manual position on its page. `nil` when the page was never
+    /// arranged.
+    ///
+    /// Nullable in the row as well as the model because "never arranged" and
+    /// "arranged, currently first" are different states, and flattening the
+    /// second onto the first would silently rearrange every untouched page the
+    /// next time one is dragged.
+    var sortOrder: Double?
+    /// Set when the row is a projection of a group of file tags rather than a
+    /// collection the user built. `nil` — the ordinary case — is what tells a
+    /// projection it has no business rewriting this row.
+    var tagKey: String?
+
     var playlist: Playlist {
         Playlist(
             id: id,
@@ -99,7 +112,9 @@ struct PlaylistRecord {
             artworkImageName: coverName,
             isAlbum: isAlbum,
             coverIsManual: coverIsManual,
-            artist: artist
+            artist: artist,
+            sortOrder: sortOrder,
+            tagKey: tagKey
         )
     }
 }
@@ -123,7 +138,9 @@ extension PlaylistRecord {
             artist: playlist.artist,
             dateAdded: playlist.dateAdded,
             isMaster: isMaster,
-            memberIDs: playlist.audioFileIDs
+            memberIDs: playlist.audioFileIDs,
+            sortOrder: playlist.sortOrder,
+            tagKey: playlist.tagKey
         )
     }
 }
@@ -278,6 +295,17 @@ final class LibraryStore: @unchecked Sendable {
                 try withTransaction {
                     let existing = try columnNames(of: "track")
                     for step in LibrarySchema.version2 where !existing.contains(step.column) {
+                        try exec(step.sql)
+                    }
+                    current += 1
+                    try exec("PRAGMA user_version = \(current);")
+                }
+            }
+
+            if current == 2 {
+                try withTransaction {
+                    let existing = try columnNames(of: "playlist")
+                    for step in LibrarySchema.version3 where !existing.contains(step.column) {
                         try exec(step.sql)
                     }
                     current += 1
@@ -457,7 +485,7 @@ final class LibraryStore: @unchecked Sendable {
             try forEachRow(
                 """
                 SELECT id, name, is_album, cover_name, cover_manual, artist,
-                       date_added, is_master
+                       date_added, is_master, sort_order, tag_key
                 FROM playlist
                 ORDER BY date_added DESC
                 """
@@ -476,7 +504,9 @@ final class LibraryStore: @unchecked Sendable {
                         artist: Self.text(stmt, 5),
                         dateAdded: Date(timeIntervalSince1970: Self.double(stmt, 6)),
                         isMaster: Self.int(stmt, 7) != 0,
-                        memberIDs: membership[id] ?? []
+                        memberIDs: membership[id] ?? [],
+                        sortOrder: Self.optionalDouble(stmt, 8),
+                        tagKey: Self.text(stmt, 9)
                     )
                 )
             }
@@ -661,8 +691,8 @@ final class LibraryStore: @unchecked Sendable {
     ) throws {
         try exec(
             """
-            INSERT INTO playlist (id, name, is_album, cover_name, cover_manual, artist, date_added, is_master)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO playlist (id, name, is_album, cover_name, cover_manual, artist, date_added, is_master, sort_order, tag_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name         = excluded.name,
                 is_album     = excluded.is_album,
@@ -670,7 +700,9 @@ final class LibraryStore: @unchecked Sendable {
                 cover_manual = excluded.cover_manual,
                 artist       = excluded.artist,
                 date_added   = excluded.date_added,
-                is_master    = excluded.is_master;
+                is_master    = excluded.is_master,
+                sort_order   = excluded.sort_order,
+                tag_key      = excluded.tag_key;
             """,
             bindings: [
                 .text(playlist.id.uuidString),
@@ -681,6 +713,8 @@ final class LibraryStore: @unchecked Sendable {
                 playlist.artist.map { .text($0) } ?? .null,
                 .double(playlist.dateAdded.timeIntervalSince1970),
                 .int(isMaster ? 1 : 0),
+                playlist.sortOrder.map { .double($0) } ?? .null,
+                playlist.tagKey.map { .text($0) } ?? .null,
             ]
         )
 
@@ -1308,6 +1342,16 @@ final class LibraryStore: @unchecked Sendable {
 
     private static func double(_ stmt: OpaquePointer, _ index: Int32) -> Double {
         sqlite3_column_double(stmt, index)
+    }
+
+    /// A nullable REAL, so `NULL` reads back as `nil` rather than as zero.
+    ///
+    /// `double` cannot tell those apart, and for a column whose whole meaning is
+    /// "has this been set" that difference is the value. `sort_order` at `0` and
+    /// `sort_order` unset are different answers.
+    private static func optionalDouble(_ stmt: OpaquePointer, _ index: Int32) -> Double? {
+        guard sqlite3_column_type(stmt, index) != SQLITE_NULL else { return nil }
+        return sqlite3_column_double(stmt, index)
     }
 
     /// `sqlite3_column_int` for a **nullable** column.

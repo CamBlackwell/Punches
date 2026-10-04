@@ -354,7 +354,13 @@ struct LibraryMigration {
                     artist: playlist.artist,
                     dateAdded: playlist.dateAdded,
                     isMaster: isMaster,
-                    memberIDs: members
+                    memberIDs: members,
+                    // Projected, not hardcoded to `nil`: a blob written before
+                    // these fields existed decodes them as `nil` anyway, so
+                    // reading them off the model keeps one projection path
+                    // rather than a second one that quietly drops them.
+                    sortOrder: playlist.sortOrder,
+                    tagKey: playlist.tagKey
                 )
             )
             if isMaster { master = playlist.id }

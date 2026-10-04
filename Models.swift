@@ -154,8 +154,27 @@ struct Playlist: Identifiable, Codable {
     /// derived from the first member song that has artwork.
     var coverIsManual: Bool
     var artist: String?
+    /// Where the user put this collection on its page, ascending. `nil` means the
+    /// page was never arranged, which is different from "arranged and currently
+    /// first" — so it is nullable rather than a defaulted zero. Written only by
+    /// `PlaylistService.moveCollection`, and only for the page it was given, so
+    /// arranging albums leaves the Playlists page alone.
+    var sortOrder: Double?
+    /// Set when this row is a projection of a group of file tags rather than a
+    /// collection the user built. `nil` for every hand-made playlist or album.
+    ///
+    /// Nullable for the same reason as `sortOrder`: "derived from the library's
+    /// tags" and "the user made this" are opposites, and the answer decides
+    /// whether a projection is allowed to rewrite the row.
+    var tagKey: String?
 
-    init(name: String, artworkImageName: String? = nil, isAlbum: Bool = false, artist: String? = nil) {
+    init(
+        name: String,
+        artworkImageName: String? = nil,
+        isAlbum: Bool = false,
+        artist: String? = nil,
+        tagKey: String? = nil
+    ) {
         self.id = UUID()
         self.name = name
         self.audioFileIDs = []
@@ -164,6 +183,8 @@ struct Playlist: Identifiable, Codable {
         self.isAlbum = isAlbum
         self.coverIsManual = artworkImageName != nil
         self.artist = artist
+        self.sortOrder = nil
+        self.tagKey = tagKey
     }
 
     /// Full designated initialiser, preserving identity and membership.
@@ -172,6 +193,10 @@ struct Playlist: Identifiable, Codable {
     /// one, so loading a playlist back out of the store — which must round-trip
     /// `id`, `dateAdded` and the ordered membership exactly — needs this spelled
     /// out.
+    ///
+    /// `sortOrder` and `tagKey` have no defaults on purpose. There is one caller
+    /// (`PlaylistRecord.playlist`), and a defaulted added column is exactly how a
+    /// write path ends up silently dropping a value the column exists to hold.
     init(
         id: UUID,
         name: String,
@@ -180,7 +205,9 @@ struct Playlist: Identifiable, Codable {
         artworkImageName: String?,
         isAlbum: Bool,
         coverIsManual: Bool,
-        artist: String?
+        artist: String?,
+        sortOrder: Double?,
+        tagKey: String?
     ) {
         self.id = id
         self.name = name
@@ -190,11 +217,13 @@ struct Playlist: Identifiable, Codable {
         self.isAlbum = isAlbum
         self.coverIsManual = coverIsManual
         self.artist = artist
+        self.sortOrder = sortOrder
+        self.tagKey = tagKey
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, audioFileIDs, dateAdded, artworkImageName
-        case isAlbum, coverIsManual, artist
+        case isAlbum, coverIsManual, artist, sortOrder, tagKey
     }
 
     /// Decoded field by field so that a blob written before a field existed
@@ -213,6 +242,12 @@ struct Playlist: Identifiable, Codable {
         isAlbum = try container.decodeIfPresent(Bool.self, forKey: .isAlbum) ?? false
         coverIsManual = try container.decodeIfPresent(Bool.self, forKey: .coverIsManual) ?? false
         artist = try container.decodeIfPresent(String.self, forKey: .artist)
+        // Nullable, so `decodeIfPresent` with no default — the same shape as
+        // `artist` above. A *required* key here would make a blob written before
+        // these columns existed fail to decode, and that is the incident this
+        // initialiser exists to prevent.
+        sortOrder = try container.decodeIfPresent(Double.self, forKey: .sortOrder)
+        tagKey = try container.decodeIfPresent(String.self, forKey: .tagKey)
     }
 }
 

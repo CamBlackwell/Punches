@@ -20,7 +20,7 @@ import Foundation
 enum LibrarySchema {
 
     /// Bumped whenever `migrate(from:to:)` gains a step.
-    static let currentVersion: Int32 = 2
+    static let currentVersion: Int32 = 3
 
     /// Statements that build version 1. Idempotent, so they double as the
     /// "create if absent" path.
@@ -120,6 +120,28 @@ enum LibrarySchema {
         // read. Every other column is nullable so that "not tagged" and "no
         // value" stay distinguishable.
         ("tags_read", "ALTER TABLE track ADD COLUMN tags_read INTEGER NOT NULL DEFAULT 0"),
+    ]
+
+    /// Steps version 2 to 3: the two `playlist` columns that make a collection
+    /// more than a set of ids.
+    ///
+    /// - `sort_order` — where the user put a collection on its page. Nullable so
+    ///   that "never arranged" is distinguishable from "arranged, currently
+    ///   first", matching the same reasoning as `version2`.
+    /// - `tag_key` — set when the row is a projection of a group of file tags
+    ///   rather than something the user built. `NULL` is the ordinary case, and
+    ///   it is what keeps a projection from rewriting a hand-made album.
+    ///
+    /// Both land in one version rather than two. Neither has shipped, and a
+    /// ladder that adds one column per version would make an upgrading user run
+    /// two transactions to reach the same place.
+    ///
+    /// Carries each column name alongside its statement for the same reason
+    /// `version2` does: `ALTER TABLE ... ADD COLUMN` is not idempotent, and
+    /// `migrate()` uses the name to skip columns `table_info` already reports.
+    static let version3: [(column: String, sql: String)] = [
+        ("sort_order", "ALTER TABLE playlist ADD COLUMN sort_order REAL"),
+        ("tag_key", "ALTER TABLE playlist ADD COLUMN tag_key TEXT"),
     ]
 
     /// The `track` columns, in the order `LibraryStore.decodeTrack` expects them.
