@@ -100,9 +100,29 @@ final class AudioSessionService {
 
             if type == .began {
                 self.manager.isPlaying = false
-                self.manager.timer?.invalidate()
-                self.manager.timer = nil
+                self.manager.playbackService.stopTimer()
                 self.manager.currentEngine?.pause()
+
+                // Push the pause to the system, which nothing else will do.
+                //
+                // Setting `isPlaying` is only the app's own copy of the state; the
+                // Control Center / lock screen read
+                // `MPNowPlayingInfoPropertyPlaybackRate`, and that key is only ever
+                // rewritten from `updateNowPlayingInfo()`. Without this call the
+                // rate stays at whatever it was — `1.0` — so an interrupted app
+                // keeps showing a *playing* track with a scrubber that will never
+                // move, because the timer that would have advanced it is the one
+                // just invalidated.
+                //
+                // The resume side needs no equivalent: `startTimer()`'s first tick
+                // calls this itself, since `lastSecond` starts at -1. The stop side
+                // has no timer to do it, which is exactly why this call is here.
+                //
+                // Deliberately updates the info rather than clearing
+                // `nowPlayingInfo`. Clearing drops the entry from Control Center
+                // entirely, so an interrupted track would vanish instead of showing
+                // as paused.
+                self.updateNowPlayingInfo()
             } else if type == .ended {
                 if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
                     let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
