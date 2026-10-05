@@ -2,7 +2,7 @@
 
 What Punches is, how to build it, and how to drive the UI. Every claim here is checked against the source; where the app does not do what it appears to, that is called out.
 
-> **The app builds.** 39 of the 41 Swift files in the repository are members of the `Punches3` target, and `xcodebuild … clean build` succeeds with zero errors on both simulator and device. The two non-members are the files in `Tests/`, which belong to the (currently empty) test bundle. Membership is automatic inside a synchronized folder; the trap is at the repository *root*, where a new file needs three manual project entries or it silently never compiles — see [03 §5](03-project-structure-and-build.md#5-target-membership-and-the-trap-in-it) and [14 A1](14-known-issues.md#a1-target-membership-silently-swallowed-files). The usage below describes the code as written; note that a missing Metal shader is a runtime blank, not a build failure, so a clean build is not evidence that every effect renders.
+> **The app builds.** 43 of the 47 Swift files in the repository are members of the `Punches3` target, and `xcodebuild … clean build` succeeds with zero errors on both simulator and device. The four non-members are the files in `Tests/` and `UITests/`, which belong to the test bundles — deliberately, so that no test code can reach the shipping binary ([03 §5.3](03-project-structure-and-build.md#53-the-result)). Membership is automatic inside a synchronized folder; the trap is at the repository *root*, where a new file needs three manual project entries or it silently never compiles — see [03 §5](03-project-structure-and-build.md#5-target-membership-and-the-trap-in-it) and [14 A1](14-known-issues.md#a1-target-membership-silently-swallowed-files). The usage below describes the code as written; note that a missing Metal shader is a runtime blank, not a build failure, so a clean build is not evidence that every effect renders.
 
 ---
 
@@ -23,14 +23,14 @@ It is a local-files player. There is no network, no account, no sync, no streami
 | Per-file artwork assign / change / remove | works |
 | Pitch shifting, −2 to +2 octaves | works |
 | **Tempo control** | **UI is commented out** — see [§6.4](#64-tempo-is-dead) |
-| **Loop** | **scope-limited, not persisted** — see [§6.5](#65-loop-is-scope-limited-and-not-persisted) |
+| **Loop** | **scope-limited, not persisted** — see [§6.5](#65-loop-is-repeat-the-queue-only) |
 | **Volume** | **no control at all** — see [§6.6](#66-there-is-no-volume-control) |
 | **Song metadata** | **filename only** — no tags are read at all ([§6.13](#613-songs-are-read-only-to-display-their-filename)) |
 | **Default song on launch** | **the oldest import, not the newest** ([§6.11](#611-the-app-opens-on-the-oldest-song-not-the-newest)) |
 | **Manual song order** | **discarded by the next import/delete** ([§6.12](#612-manual-song-order-is-discarded)) |
 | **Share-to-app (extension import)** | **nonfunctional** — see [09](09-file-import-and-sharing.md) |
 | **Share out (system share sheet)** | works; the playlist path has a hazard ([09 §6.2](09-file-import-and-sharing.md#62-sharesheet)) |
-| Unit tests | target is empty ([03 §5.4](03-project-structure-and-build.md#55-the-test-targets-are-empty-too)) |
+| Unit tests | target is empty ([03 §5.4](03-project-structure-and-build.md#55-the-test-folders-are-bound-to-the-test-targets-not-the-app)) |
 
 ---
 
@@ -214,19 +214,21 @@ It is also reachable only from the **Songs** tab's overflow menu — not from Pl
 
 > While restoring it, note the end labels are wrong: the range is `0.1...1.9` (`:248`) but the right-hand label reads `2.0x` (`:260`).
 
-Tempo is also not persisted ([12](12-persistence-and-keys.md)), so it resets to 1.0 on every launch regardless.
+Tempo *is* now persisted ([12](12-persistence-and-keys.md)) — it just still has no slider to set it with.
 
-### 6.5 Loop is scope-limited and not persisted
+### 6.5 Loop is repeat-the-queue only
 
-`playbackControls` has a working loop toggle — `audioManager.isLooping.toggle()` at `View/audio_player_view.swift:217`, with the icon switching between `repeat` and `repeat.1` at `:219`. `isLooping` is a plain `@Published var isLooping: Bool = false` (`audio_manager.swift:18`) and is **not persisted** ([12](12-persistence-and-keys.md)), so it resets to `false` on every launch.
+`playbackControls` has a working loop toggle — `audioManager.isLooping.toggle()` at `View/audio_player_view.swift`, and the flag is now **persisted** (`playbackIsLooping`, [12](12-persistence-and-keys.md)), so it survives a relaunch.
 
-It *is* read, but only in one place: `AudioPlaybackService.swift:190`, where it makes the queue wrap to the beginning **when the last song ends**. So the control is narrower than its icon suggests:
+It is read in exactly one place: the end of the queue, where it wraps to the first song. There is no repeat-*one* mode.
 
-- It works on natural end-of-queue.
-- It does **not** make `skipNextSong` wrap — the button still disables at the end.
-- The icon at `repeat.1` is a single-item repeat, which is not what the flag does at all.
+**The icon used to be `repeat.1`** when the flag was set, which advertised single-item repeat and never existed — the control was describing a feature the code did not have. It now always renders `repeat`, tinted with the accent colour when on, with an accessibility label so the state is not carried by colour alone.
 
-[04 §7](04-audio-pipeline.md#7-queue-skip-and-loop) covers the completion path that honours it, and [14 · D1](14-known-issues.md#d1-loop-is-honoured-only-at-the-end-of-the-queue) carries the investigation.
+[04 §7](04-audio-pipeline.md#7-queue-skip-and-loop) covers the wrap rule, and [14 · D1](14-known-issues.md#d1-loop-is-honoured-only-at-the-end-of-the-queue) carries the investigation.
+
+### 6.5a Previous un-pauses the track
+
+Pressing Previous more than 3 seconds into a track restarts it — and used to start *playing* it, even if you had paused. It now only seeks to zero and leaves the play/pause state alone. There is a separate button for that.
 
 ### 6.6 There is no volume control
 
@@ -281,24 +283,32 @@ Nothing in the app parses a tag. A repository-wide search for `AVMetadataItem`, 
 
 Because the model has no fields for metadata, this is not a view-layer omission you could patch in a screen. See [14 · D14](14-known-issues.md#d14-no-metadata-is-read-anywhere-the-title-is-the-filename).
 
-### 6.14 A phone call leaves the player stuck "playing"
+### 6.14 A phone call left the player stuck "playing" — fixed
 
-On interruption the observer does set `isPlaying = false` and stop the timer and pause the engine (`Services/AudioSessionService.swift:101-105`) — so the *app's* flag is right. What it never does is re-publish `MPNowPlayingInfoCenter`, so `MPNowPlayingInfoPropertyPlaybackRate` keeps its last value of `1.0` and Control Center and the lock screen go on showing the track as playing. `currentlyPlayingID` also survives, so the mini player keeps a track with a frozen progress bar.
+On interruption the observer sets `isPlaying = false`, stops the tick and pauses the engine, and now also re-publishes `MPNowPlayingInfoCenter`, so `MPNowPlayingInfoPropertyPlaybackRate` becomes `0.0` rather than staying at `1.0`.
 
-The dead end is that a phone call delivers `.ended` **without** `.shouldResume` — the normal outcome — and that branch (`:107-119`) is gated entirely on the option, so it does nothing at all. The timer stays stopped. Returning to the foreground does not repair it either: the `willEnterForeground` handler re-activates the session but never restarts the engine or the timer. `startTimer` is only reachable from `load`, `togglePlayPause`, and `skipNextSong` — all of them user actions — so the player stays frozen until you tap something.
+The dead end was the `.ended` branch: a phone call delivers it **without** `.shouldResume` — the normal outcome — and it was gated entirely on that option, so it did nothing. The session was left deactivated and the tick stayed dead, and returning to the foreground did not repair it either. All three now work: `.ended` re-activates the session either way, then either resumes or restarts the tick; `willEnterForeground` restarts the engine if it is not running; and `stop()` clears `MPNowPlayingInfoCenter` through a new `clearNowPlayingInfo()`.
 
-`stop()` has the same gap — it never clears `nowPlayingInfo` either, so the identical symptom appears whenever the queue ends ([14 · E14](14-known-issues.md#e14-an-interruption-leaves-state-that-reads-as-still-playing)).
+`currentlyPlayingID` still survives an interruption on purpose — it is the only record of *what* to resume. The visible symptom of that used to be a frozen progress bar; it now moves again ([14 · E14](14-known-issues.md#e14-an-interruption-leaves-state-that-reads-as-still-playing)).
 
-### 6.15 The next button can skip two songs at once
+### 6.15 Auto-advance was unreliable — fixed
 
-Auto-advance is wired **twice**, with no coordination:
+Auto-advance used to be wired **twice**, with nothing stopping both from running: the engine's last-buffer completion, and the progress tick's `currentTime >= duration` check. Both called a non-re-entrant `skipNextSong`, so whichever lost the race issued a second, unwanted advance. Four separate defects were involved, and all four are fixed:
 
-1. `engine.onPlaybackFinished` fires `skipNextSong()` from the last buffer's completion callback (`AudioPlaybackService.swift:47-49` → `AppleAudioEngine.swift:213-236`).
-2. The 0.2 s timer checks `currentTime >= duration` and calls `skipNextSong()` (`AudioPlaybackService.swift:134-136`).
+- **One mechanism.** The tick no longer decides that a track has ended; the engine's completion is the only signal. Everything — automatic, the Next button, the remote command — goes through `advance(_:)` with an in-flight guard ([14 · E15](14-known-issues.md#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song)).
+- **The tick survives being backgrounded.** It was a `Timer.scheduledTimer`, which runs in the **`.default` run-loop mode**: suppressed during every scroll and drag, and throttled by the system in the background. It is now a `DispatchSourceTimer`, which is not on the run loop at all ([14 · E19](14-known-issues.md#e19-the-progress-timer-is-a-run-loop-timer-so-it-stops-when-it-matters)).
+- **Stale buffer callbacks are inert.** A completion callback could decrement the *new* track's scheduling counter and set `isFileFinished` early. Each buffer now carries a generation token that `load`, `stop` and `seek` invalidate ([14 · E18](14-known-issues.md#e18-seeking-near-the-end-of-a-track-advanced-the-queue)).
+- **A failed session activation no longer stops playback.** `play()` used to `return` out of its `catch` *after* the timer had been cancelled and the engine stopped. `setActive` fails routinely while the system is transitioning — the device locking, an interruption tearing down, another app holding the session — which are exactly the states where this shows up. It now retries, bounded, and nothing is torn down ([14 · E21](14-known-issues.md#e21-play-returned-early-on-a-failed-session-activation-after-stopping-the-timer)).
 
-Neither records that an advance is already in progress, and `skipNextSong` is not re-entrant. The completion handler checks its stop guard on `audioQueue` and then hops to the main queue **without re-checking**, so a callback that was already past the guard when you pressed Next calls `skipNextSong()` *after* the replacement track has started — skipping it. The timer is also a `Timer.scheduledTimer` in the default run-loop mode, so it does not fire while you are scrolling and is throttled in the background, which is why auto-next is unreliable in exactly the situations people notice it ([14 · E15](14-known-issues.md#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song)).
+Lock-screen, Control Center and headphone buttons are also fixed: their targets were registered inside a `do` block whose first two statements throw, so a throw at launch left them permanently inert, and the lock-screen *Play* button called a **toggle** rather than a play ([14 · E16](14-known-issues.md#e16-remote-commands-are-registered-inside-the-session-setup-do-block)).
 
-Related, and independent: the lock-screen and headphone buttons are registered inside a `do` block whose first two statements throw — if either fails, no remote command target is ever added and those buttons are permanently inert. The `play` command also *toggles* rather than playing, so it can pause when you meant to resume ([14 · E16](14-known-issues.md#e16-remote-commands-are-registered-inside-the-session-setup-do-block)).
+### 6.16 The app could die on launch with no error
+
+`AudioManager.init()` builds the audio engine, and `AppleAudioEngine.init()` used to `start()` the engine, read `mainMixerNode`, and `prepare()` — all at launch, all before anything was on screen. When the audio hardware does not answer, none of those three is catchable: two call `abort()` from inside AudioToolbox and the third raises an `NSException`. The `do`/`catch` around them could not help, because no error is produced.
+
+`init()` now attaches the nodes and connects only `playerNode → timePitch`. The mixer edge is made by the first file that needs it, and `prepare()`/`start()` happen there and in `play()`. An app that is launched and never played now touches no audio hardware at all.
+
+This was found by making the unit-test bundle runnable — it is a *hosted* bundle, so the app launches first and all 18 tests reported *"the test runner crashed before establishing connection"* until this was fixed ([14 · E20](14-known-issues.md#e20-the-audio-engine-touched-hardware-at-launch-and-could-abort-the-process)).
 
 ---
 

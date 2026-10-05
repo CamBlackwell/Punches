@@ -15,9 +15,49 @@ class AppleAudioEngine: NSObject, AudioEngineProtocol {
     private var isFileFinished = false
     private var isUserStopped = false
     private var hasWarmedUpTimePitch = false
+
+    /// Whether `timePitch → mainMixerNode` has been connected yet.
+    ///
+    /// That edge is deferred out of `setupAudioEngine()` — see there for why. It
+    /// needs its own flag because `reconfigureGraphIfNeeded` decides whether to
+    /// run on `alreadyCorrect`, which can be `true` on a brand-new engine: the
+    /// placeholder `playerNode → timePitch` connection adopts the audio session's
+    /// rate, so any file already at that rate skips the reconfigure entirely and
+    /// the graph would be left with no path to the speakers. Silence, for every
+    /// 48 kHz file, with nothing logged.
+    private var isOutputConnected = false
     private let buffersAhead = 5
     private let bufferDuration: TimeInterval = 0.25
-    var onPlaybackFinished: (() -> Void)?
+    /// Fired on the main queue once the final scheduled buffer has been played.
+///
+/// Deliberately *not* cleared by `stop()` or `load()`, even though that reads
+/// like it should be. `AudioPlaybackService` reassigns this from the main
+/// thread immediately after calling `load()`, while the engine's own `stop()`
+/// and `load()` bodies are still sitting unstarted on `audioQueue` — so clearing
+/// it there races the reassignment and can wipe the closure the *new* track
+/// needs, silently disabling auto-advance for that track. Staleness is handled
+/// by `playbackGeneration` instead, which is checked on `audioQueue` where it
+/// cannot race.
+var onPlaybackFinished: (() -> Void)?
+
+    /// Identifies the current scheduling run.
+    ///
+    /// `AVAudioPlayerNode` keeps invoking completion handlers for buffers that
+    /// were *flushed* rather than played, and both `stop()` and `seek()` flush
+    /// up to `buffersAhead` of them. Those late callbacks used to land on
+    /// `audioQueue` behind the work that had just replaced them, decrement the
+    /// new run's `scheduledBuffersCount`, and — because the flushed run's last
+    /// buffer had `atEnd == true` — set `isFileFinished` on a track that had
+    /// barely started and fire `onPlaybackFinished`. That is the "the next
+    /// button skips two songs" and "seeking near the end skips the track"
+    /// behaviour, and no amount of clearing `onPlaybackFinished` prevents it,
+    /// because the damage is to the scheduling counter rather than the
+    /// callback.
+    ///
+    /// Every buffer captures the generation it was scheduled under and discards
+    /// itself if the engine has moved on. All three mutators of scheduling
+    /// state bump it — `load`, `stop` and `seek`.
+    private var playbackRun = PlaybackRun()
 
     #if DEBUG
     private var debug_starveCount: Int = 0
@@ -57,13 +97,6 @@ class AppleAudioEngine: NSObject, AudioEngineProtocol {
     override init() {
         super.init()
         setupAudioEngine()
-
-        do {
-            audioEngine.prepare()
-            try audioEngine.start()
-        } catch {
-            print("Early engine start failed: \(error)")
-        }
     }
 
     /// Attaches the nodes and gives the player an initial format.
@@ -73,17 +106,33 @@ class AppleAudioEngine: NSObject, AudioEngineProtocol {
     /// placeholder: `reconfigureGraphIfNeeded` reconnects the edge in the
     /// first file's own format before anything is scheduled, and the engine is
     /// long-lived, so the placeholder never reaches playback.
+    ///
+    /// ## The output edge is connected later, not here
+    ///
+    /// Reading `audioEngine.mainMixerNode` initialises the IO unit, and when the
+    /// audio hardware does not answer, AudioToolbox reports it through
+    /// `_ReportRPCTimeout` → `abort()` from *inside* the accessor. There is no
+    /// error to catch and no way to decline: merely naming the mixer was enough
+    /// to kill the process during `AudioManager.init`, before any playback code
+    /// ran and before anything could be shown or logged.
+    ///
+    /// So the graph is built up to the time-pitch unit here and the connection to
+    /// the mixer is made by `reconfigureGraphIfNeeded` on the first file that
+    /// needs it. Nothing is lost by the delay — the mixer was only ever going to
+    /// be used once there was audio to route through it, and an app that is
+    /// launched and never played now touches no audio hardware at all.
+    ///
+    /// `prepare()` is deferred for the same reason and is genuinely redundant
+    /// rather than merely premature: preparing a graph whose chain ends at
+    /// `timePitch` raises an `NSException` from `AVAudioEngineGraph::Initialize`
+    /// — an Objective-C exception, so again nothing to catch. Both
+    /// `reconfigureGraphIfNeeded` and `play()` prepare after the graph reaches
+    /// the mixer, and `start()` prepares implicitly, so the eager call bought
+    /// nothing.
     private func setupAudioEngine() {
         audioEngine.attach(playerNode)
         audioEngine.attach(timePitch)
         audioEngine.connect(playerNode, to: timePitch, format: nil)
-        audioEngine.connect(timePitch, to: audioEngine.mainMixerNode, format: nil)
-        audioEngine.prepare()
-        do {
-            try audioEngine.start()
-        } catch {
-            print("Failed to start audio engine \(error)")
-        }
     }
 
     /// Reconnects the graph in `format`, if the time-pitch unit's rate differs.
@@ -120,7 +169,10 @@ class AppleAudioEngine: NSObject, AudioEngineProtocol {
         let current = timePitch.inputFormat(forBus: 0)
         let alreadyCorrect = current.sampleRate == format.sampleRate
             && current.channelCount == format.channelCount
-        guard !alreadyCorrect else { return }
+
+        // `!isOutputConnected` overrides `alreadyCorrect`: the graph can already
+        // be the right shape *and* still have nothing connected to the speakers.
+        guard !alreadyCorrect || !isOutputConnected else { return }
 
         let wasRunning = audioEngine.isRunning
 
@@ -134,6 +186,7 @@ class AppleAudioEngine: NSObject, AudioEngineProtocol {
         audioEngine.disconnectNodeOutput(timePitch)
         audioEngine.connect(playerNode, to: timePitch, format: format)
         audioEngine.connect(timePitch, to: audioEngine.mainMixerNode, format: format)
+        isOutputConnected = true
         audioEngine.prepare()
 
         if wasRunning {
@@ -188,6 +241,12 @@ class AppleAudioEngine: NSObject, AudioEngineProtocol {
         guard let file = audioFile, !isFileFinished else { return }
         configureBufferCapacityIfNeeded()
 
+        // The token of the run in progress, read not advanced. This only ever
+        // runs on `audioQueue`, so it cannot change underneath the loop — and
+        // advancing it here would invalidate the buffers the previous pass
+        // scheduled, since this function recurses as buffers drain.
+        let generation = playbackRun.current
+
         while scheduledBuffersCount < buffersAhead && currentFramePosition < file.length {
             let framesRemaining = file.length - currentFramePosition
             let framesToRead = min(AVAudioFrameCount(framesRemaining), bufferFrameCapacity)
@@ -225,6 +284,11 @@ class AppleAudioEngine: NSObject, AudioEngineProtocol {
             ) { [weak self] _ in
                 guard let self = self else { return }
                 self.audioQueue.async {
+                    // Drop the callback if the run it belonged to has been
+                    // replaced. This is the whole point of the generation, and
+                    // it is checked here — on the same serial queue as `load`,
+                    // `stop` and `seek` — so it cannot itself race.
+                    guard self.playbackRun.isCurrent(generation) else { return }
                     if self.isUserStopped { return }
                     self.scheduledBuffersCount -= 1
                     #if DEBUG
@@ -258,6 +322,13 @@ class AppleAudioEngine: NSObject, AudioEngineProtocol {
 
     func load(audioFile: AudioFile) {
         audioQueue.async {
+            // Invalidate the previous run's outstanding callbacks *before*
+            // anything else. The counters they would decrement are reset below.
+            // Explicit `_ =`: the returned token is deliberately *not* used here.
+            // Capturing it is the one thing this must not do — see
+            // `scheduleBuffersIfNeeded`, where reading it bumps it, and where
+            // the read is on the hot path.
+            _ = self.playbackRun.begin()
             do {
                 let file = try AVAudioFile(forReading: audioFile.fileURL)
                 self.audioFile = file
@@ -310,11 +381,17 @@ class AppleAudioEngine: NSObject, AudioEngineProtocol {
     }
 
     func pause() {
-        playerNode.pause()
+        // Serialised with every sibling. Calling `playerNode.pause()` directly
+        // ran it on whichever thread the notification arrived on, racing the
+        // scheduling work already queued on `audioQueue`.
+        audioQueue.async {
+            self.playerNode.pause()
+        }
     }
 
     func stop() {
         audioQueue.async {
+            _ = self.playbackRun.begin()
             self.isUserStopped = true
             self.playerNode.stop()
             self.seekOffset = 0
@@ -327,6 +404,11 @@ class AppleAudioEngine: NSObject, AudioEngineProtocol {
 
     func seek(to time: TimeInterval) {
         audioQueue.async {
+            // `playerNode.stop()` below flushes every pending buffer and the
+            // system still calls their handlers, so this must invalidate them
+            // before the counters are reset — otherwise a seek near the end of a
+            // track fires the end-of-track completion on the rescheduled run.
+            _ = self.playbackRun.begin()
             guard let file = self.audioFile else { return }
 
             let wasPlaying = self.playerNode.isPlaying

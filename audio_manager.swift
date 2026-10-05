@@ -12,11 +12,20 @@ class AudioManager: NSObject, ObservableObject {
     @Published var currentTime: TimeInterval = 0
     @Published var duration: TimeInterval = 0
     @Published var currentlyPlayingID: UUID?
-    @Published var tempo: Float = 1.0
-    @Published var pitch: Float = 0.0
+    @Published var tempo: Float = 1.0 {
+        didSet { defaults.set(tempo, forKey: tempoKey) }
+    }
+    @Published var pitch: Float = 0.0 {
+        didSet { defaults.set(pitch, forKey: pitchKey) }
+    }
     @Published var selectedAlgorithm: PitchAlgorithm = .apple
     @Published var audioAnalyzer = UnifiedAudioAnalyser()
-    @Published var isLooping: Bool = false
+    /// Repeat the whole queue when it reaches the end. One mode only, so the
+    /// control renders `repeat` whether or not it is on — an icon that switched
+    /// to `repeat.1` advertised a mode that did not exist.
+    @Published var isLooping: Bool = false {
+        didSet { defaults.set(isLooping, forKey: isLoopingKey) }
+    }
     @Published var visualisationMode: VisualisationMode = .Goniometer
     @Published var playingFromSongsTab: Bool = false
     @Published var displayedSongs: [AudioFile] = []
@@ -40,13 +49,62 @@ class AudioManager: NSObject, ObservableObject {
     @Published var importReportToPresent: ImportReport?
 
     var currentEngine: AudioEngineProtocol?
-    var timer: Timer?
+    /// The progress tick. A `DispatchSourceTimer` rather than a run-loop `Timer`
+    /// — see `AudioPlaybackService.startTimer` for why that matters here.
+    var timer: DispatchSourceTimer?
     let artworkDirectory: URL
     let audioFilesKey = "savedAudioFiles"
     let playlistsKey = "savedPlaylists"
     let algorithmKey = "selectedAlgorithm"
     let visualisationModeKey = "visualisationMode"
-    var isSeeking = false
+
+    /// Persisted transport preferences. Tempo, pitch and loop were the three
+    /// playback settings with no writer at all, so they silently reset on every
+    /// launch while every other preference survived — which reads as the app
+    /// forgetting what you told it.
+    let tempoKey = "playbackTempo"
+    let pitchKey = "playbackPitch"
+    let isLoopingKey = "playbackIsLooping"
+
+    /// Where the transport preferences are stored. A computed property rather
+    /// than a stored one so it is never read before `init` completes.
+    private var defaults: UserDefaults { .standard }
+
+    /// Restores the transport preferences.
+    ///
+    /// Each write re-enters the property observer and therefore writes straight
+    /// back to the same key with the same value, which is harmless — but it does
+    /// mean the value must be clamped here. `setTempo`/`setPitch` clamp on the
+    /// way in from the UI, and a stored value that has been corrupted or written
+    /// by a build with different bounds would otherwise reach the time-pitch
+    /// unit unclamped.
+    func loadTransportPreferences() {
+        if defaults.object(forKey: tempoKey) != nil {
+            let stored = defaults.float(forKey: tempoKey)
+            tempo = stored.isFinite ? max(0.1, min(4.0, stored)) : 1.0
+        }
+
+        if defaults.object(forKey: pitchKey) != nil {
+            let stored = defaults.float(forKey: pitchKey)
+            pitch = stored.isFinite ? max(-2400, min(2400, stored)) : 0.0
+        }
+
+        isLooping = defaults.bool(forKey: isLoopingKey)
+    }
+
+    /// Monotonic deadline until which the progress tick is muted after a seek.
+    ///
+    /// A deadline rather than a `Bool`, because a `Bool` cleared from a deferred
+    /// block stays `true` forever if the app is suspended before that block
+    /// runs — and every subsequent tick then returns early, freezing progress
+    /// and the lock-screen position with no way to recover.
+    var seekSuppressedUntil: TimeInterval = 0
+
+    /// Set by `play`; consumed by the first progress tick, which publishes
+    /// `engine.duration`. `load` opens the file on the engine's own queue, so
+    /// the true duration is not readable on the same turn as the `play` call.
+    var needsDurationSync = false
+
     let masterPlaylistKey = "masterPlaylistID"
     var masterPlaylistID: UUID?
 
@@ -121,6 +179,7 @@ class AudioManager: NSObject, ObservableObject {
         }
 
         engineService.loadSelectedAlgorithm()
+        loadTransportPreferences()
         libraryService.loadVisualisationMode()
         sessionService.setupAudioSession()
         engineService.initialiseEngine()
@@ -228,7 +287,7 @@ class AudioManager: NSObject, ObservableObject {
     }
 
     deinit {
-        timer?.invalidate()
+        timer?.cancel()
         timer = nil
         for token in observerTokens {
             NotificationCenter.default.removeObserver(token)
@@ -418,6 +477,15 @@ class AudioManager: NSObject, ObservableObject {
         playbackService.togglePlayPause()
     }
 
+    /// Begin-or-resume, for the remote `play` command. Never inverts state.
+    func resumePlayback() {
+        playbackService.resumePlayback()
+    }
+
+    func pausePlayback() {
+        playbackService.pausePlayback()
+    }
+
     func seek(to time: TimeInterval) {
         playbackService.seek(to: time)
     }
@@ -456,12 +524,10 @@ class AudioManager: NSObject, ObservableObject {
     }
 }
 
-extension AudioManager: AVAudioPlayerDelegate {
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        isPlaying = false
-        currentlyPlayingID = nil
-        currentTime = 0
-        timer?.invalidate()
-        timer = nil
-    }
-}
+// `AVAudioPlayerDelegate` used to be conformed here, with
+// `audioPlayerDidFinishPlaying` as what looked like the app's end-of-track
+// completion path. Nothing in the project is an `AVAudioPlayer` — playback is
+// `AVAudioEngine` + `AVAudioPlayerNode` — so the method could never fire, and
+// reading this file alone leads straight to the wrong answer about how a track
+// ends. The real completion is `AppleAudioEngine.onPlaybackFinished`, which is
+// generation-guarded and reaches `AudioPlaybackService.advance`.

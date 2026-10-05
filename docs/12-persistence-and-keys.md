@@ -234,13 +234,30 @@ Five tables, created by `LibrarySchema.version1`: `track`, `playlist`, `playlist
 | Visualisation mode | ✅ | `"visualisationMode"` |
 | Pitch algorithm | ✅ | `"selectedAlgorithm"` |
 | All 35 theme choices + 30 theme values | ✅ | `theme.*` |
-| **`tempo`** | ❌ | `@Published var tempo: Float = 1.0` (`audio_manager.swift:14`) — resets every launch |
-| **`pitch`** | ❌ | `@Published var pitch: Float = 0.0` (`:15`) |
-| **`isLooping`** | ❌ | `@Published var isLooping: Bool = false` (`:18`) |
-| `isSeeking`, `playbackQueue` | ❌ | session only |
+| `tempo` | ✅ | `"playbackTempo"` — `didSet` writer, clamped and finite-checked in `loadTransportPreferences()` |
+| `pitch` | ✅ | `"playbackPitch"` — same |
+| `isLooping` | ✅ | `"playbackIsLooping"` — same. Persisting it matters independently of semantics: a toggle that resets on every launch reads as broken whatever it means |
+| `seekSuppressedUntil`, `playbackQueue`, `currentlyPlayingID` | ❌ | session only |
 | `AudioManager.artworkDirectory` path | derived | static from `fileDirectory` |
 
-The three unpersisted playback flags are almost certainly unintentional — the three slider/transport states a user expects to survive a relaunch are exactly the ones that reset. Adding them is a `UserDefaults` write in `AudioPlaybackService` plus a read in `AudioManager.init`.
+### Loading the transport preferences
+
+All three are read once, in `AudioManager.loadTransportPreferences()`, called from `init`.
+
+**The load clamps, and it has to.** `setTempo`/`setPitch` clamp on the way in from
+the UI; `loadTransportPreferences` clamps the same way and rejects non-finite
+values. A stored float that has been corrupted — or written by a build with
+different bounds — would otherwise reach `AVAudioUnitTimePitch` unclamped. Writing
+the loaded value re-enters the `didSet` and writes the same value straight back,
+which is harmless but is exactly why the clamp cannot live only in the setter.
+
+`defaults` is a **computed** property returning `UserDefaults.standard`, not a
+stored one, so it cannot be read before `init` completes. (An attempt using
+`UserDefaults?` with `.map { defaults.set(...) }` in the observers does not
+compile — `defaults.set` needs the unwrapped value.)
+
+Note that `isLooping` means **repeat the whole queue**, not repeat the current
+track; the icon reflects that. See [14 · D1](14-known-issues.md#d1-loop-is-honoured-only-at-the-end-of-the-queue).
 
 ---
 
@@ -248,7 +265,7 @@ The three unpersisted playback flags are almost certainly unintentional — the 
 
 1. Declare the `let` key constant next to the others in `audio_manager.swift:28-34` (or `ThemeKey` in `setting_View.swift:851`).
 2. Add the `@Published var` with a `didSet` writer, or a `@AppStorage` — but be aware `@AppStorage` would be the first in the project, so match the surrounding style instead.
-3. Load it in `AudioManager.init` (`audio_manager.swift:73-107`) or `ThemeManager.init` (`setting_View.swift:1024-1092`) with a sensible default, and make the default derivable from a preset where one exists.
+3. Load it in `AudioManager.init` (`audio_manager.swift:73-107`) or `ThemeManager.init` (`setting_View.swift:1024-1092`) with a sensible default, and make the default derivable from a preset where one exists. **Clamp on load, not only in the setter** — see §6; writing a loaded value re-enters `didSet`, and a stored value can be out of range even if the UI never produced one.
 4. If it is user-facing, add a control to `SettingsView` and a row to [11-settings-ui.md](11-settings-ui.md).
 5. Update the relevant table above. These docs are the inventory; if you add a key and do not add a row, the docs are now wrong.
 6. **If the value is a new field on `Playlist` or `AudioFile`, it is a schema change, not a key.** Tracks and playlists are rows, not `Codable` blobs, so `UserDefaults` guidance does not apply: add the column to `LibrarySchema.version1` (or, if it is already shipped, to a **new** `versionN` array of `[(column, sql)]` pairs), bump `LibrarySchema.currentVersion`, and add the matching `else if current == N { … bump to N+1 … }` branch in `LibraryStore.migrate()`. Reading a column that does not exist fails at **prepare** time and takes every write in the snapshot with it, so test against a database created at the *previous* version, not a fresh one — those are different branches in `migrate()` and only one of them is a fresh install. `TrackRecord` and `PlaylistRecord` already carry the projection for this reason, as does `LibrarySchema.trackColumns`, which both SELECTs share.

@@ -134,7 +134,7 @@ Two rows in a `ZStack`:
 | Row | Controls |
 |---|---|
 | top `HStack(spacing: 40)` | `backward.fill` (`.title`, `theme.accentColor`) → 70 pt `Circle` play/pause → `forward.fill` (`.title`, `theme.accentColor`, **disabled when `audioFiles.count < 2`**) |
-| bottom `HStack` | trailing repeat button: `repeat.1` when looping else `repeat`, 18 pt bold, `theme.accentColor` when looping else `theme.secondaryTextColor`, clipped to a `Circle` |
+| bottom `HStack` | trailing repeat button: **always** `repeat`, 18 pt bold, `theme.accentColor` when looping else `theme.secondaryTextColor`, clipped to a `Circle`, with an `accessibilityLabel` carrying the state. It used to switch to `repeat.1`, which advertised single-item repeat — a mode the flag has never implemented; the flag repeats the whole *queue* |
 
 All four use `PlainButtonStyle()`, so there is **no press feedback** — the play button and skip buttons give no visual response to touch.
 

@@ -6,8 +6,8 @@ Fourteen reference documents describing how the Punches audio-visualiser app is 
 
 Two documents change how you should read everything else:
 
-1. **[03 — Project Structure & Build](03-project-structure-and-build.md)** — how the `Punches3` target collects its sources, and the trap in `membershipExceptions`. Target membership has since been repaired: `AudioEngines`, `AudioMeters`, `Services` and `View` are now listed in the target's `fileSystemSynchronizedGroups`, so **all 39 project Swift files compile** and both the simulator and device builds succeed.
-2. **[14 — Known Issues & Risks](14-known-issues.md)** — a severity-ranked register of **91 entries** across seven categories — 13 Critical, 32 High, 28 Medium, 18 Low — each with evidence, impact, and fix.
+1. **[03 — Project Structure & Build](03-project-structure-and-build.md)** — how the `Punches3` target collects its sources, and the trap in `membershipExceptions`. Target membership has since been repaired: `AudioEngines`, `AudioMeters`, `Services` and `View` are now listed in the target's `fileSystemSynchronizedGroups`, so **every Swift file the app ships compiles** and both the simulator and device builds succeed. `Tests/` and `UITests/` are bound to the *test* targets instead, so no test code can ship ([03 §5.5](03-project-structure-and-build.md#55-the-test-folders-are-bound-to-the-test-targets-not-the-app)).
+2. **[14 — Known Issues & Risks](14-known-issues.md)** — a severity-ranked register of **107 entries** across seven categories — 19 Critical, 36 High, 34 Medium, 18 Low — each with evidence, impact, and fix.
 
 > **Status note.** The library layer described throughout this suite was replaced by the SQLite-backed store merged from `laptop`: `LibraryStore`, `LibrarySchema`, `LibraryMigration`, `LibraryReconciler`, `LibraryImportPipeline` and `LibraryImportReport` are new, `cleanupOrphanedFiles` is gone, and the library root is an app-owned subdirectory rather than the Documents root. Entries **C1**, **C2**, **C3**/**E6**, **C12** and **G1**/**A4**/**G1.3** are addressed by that work; treat their entries as historical.
 
@@ -28,7 +28,7 @@ Two documents change how you should read everything else:
 | 11 | [Settings UI](11-settings-ui.md) | `View/setting_View.swift` — screen structure, the quality tiers, and the settings that do not exist |
 | 12 | [Persistence and Storage Keys](12-persistence-and-keys.md) | Every persisted byte in the app: keys, on-disk layout, and what survives a relaunch |
 | 13 | [Concurrency & Threading](13-concurrency-and-threading.md) | Every thread boundary, the invisible isolation model, real-time allocation, locks, continuations |
-| 14 | [Known Issues & Risks](14-known-issues.md) | 91 ranked defects and dead paths with evidence, impact, and fix, plus a symptom → issue table |
+| 14 | [Known Issues & Risks](14-known-issues.md) | 107 ranked defects and dead paths with evidence, impact, and fix, plus a symptom → issue table |
 
 ## Suggested reading paths
 
@@ -41,6 +41,7 @@ Two documents change how you should read everything else:
 - **Working on the library or playlists** — [08](08-playlists-and-library.md) → [12](12-persistence-and-keys.md) → [09](09-file-import-and-sharing.md).
 - **Working on appearance** — [10](10-theming-and-shaders.md) → [11](11-settings-ui.md) → [12 §4](12-persistence-and-keys.md#4-theme-keys--all-30).
 - **Changing anything persistent** — [12](12-persistence-and-keys.md) is the canonical key inventory and must be updated in the same change.
+- **Changing queue or track-advance behaviour** — [04 §7](04-audio-pipeline.md#7-queue-skip-and-loop) → [14 · E15](14-known-issues.md#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) → `Tests/PlaybackContinuationTests.swift`. Read the tests first: they are the only executable statement of the queue rules, and they were mutation-checked, so a green run is worth something.
 
 ## Conventions
 

@@ -262,11 +262,21 @@ final class PlaylistService {
         var updatedPlaylist = manager.playlists[index]
         updatedPlaylist.audioFileIDs.move(fromOffsets: source, toOffset: destination)
 
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+        // No `DispatchQueue.main.async` hop. The index is captured by value, so
+        // anything that creates, deletes or reorders a playlist in the gap
+        // between the lookup and the write lands on the wrong row — or
+        // resurrects a deleted one. The work is already on the main actor, so the
+        // hop deferred the write by a run-loop pass and bought nothing.
+        manager.playlists[index] = updatedPlaylist
+        savePlaylists()
 
-            self.manager.playlists[index] = updatedPlaylist
-            self.savePlaylists()
+        // Mirror `updatePlaylistOrder`: without this the playing queue kept the
+        // pre-reorder order for the rest of the session, so dragging a playlist
+        // into a new order had no effect on what played next.
+        if !manager.playingFromSongsTab {
+            manager.playbackQueue = updatedPlaylist.audioFileIDs.compactMap { id in
+                manager.audioFiles.first { $0.id == id }
+            }
         }
     }
 

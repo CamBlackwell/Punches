@@ -223,6 +223,16 @@ class UnifiedAudioAnalyser: ObservableObject {
   private var updateTimer: Timer?
   private let targetFPS: Double = 60.0
 
+  // MARK: Tap installation
+
+  /// How long to wait between attempts to install the analysis tap.
+  private static let tapInstallRetryInterval: TimeInterval = 0.05
+
+  /// Total attempts, including the first. 0.05 s apart, so this covers roughly
+  /// 1.5 s — comfortably longer than starting the output unit can reasonably
+  /// take, and short enough that a genuine failure is not left on screen.
+  private static let tapInstallAttempts = 30
+
   // MARK: init
 
   init() {
@@ -300,25 +310,60 @@ class UnifiedAudioAnalyser: ObservableObject {
   ///   - audioEngine: The engine to tap.
   ///   - generation:  Opaque integer supplied by AudioManager. Unused here;
   ///                  the `isCurrent` closure is the actual cancellation gate.
-  ///   - isCurrent:   Called just before the tap fires. Return `false` to
+  ///   - isCurrent:   Called before every attempt. Return `false` to
   ///                  abort — AudioManager bumps its generation counter on
   ///                  every new song so stale closures self-cancel.
   func attach(to audioEngine: AVAudioEngine,
               generation: Int = 0,
               isCurrent: @escaping () -> Bool = { true }) {
-    // Single 150 ms delay — enough for AVAudioEngine to finish its internal
-    // graph reconfiguration after play(). No nested asyncAfter.
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-      guard let self else { return }
-      guard isCurrent() else { return }          // cancelled by a newer song
-      self.installTapSafely(on: audioEngine)
+    attemptTapInstall(on: audioEngine,
+                      isCurrent: isCurrent,
+                      attemptsRemaining: Self.tapInstallAttempts)
+  }
+
+  /// Retries the tap install until the engine is genuinely running.
+  ///
+  /// This used to be a single fixed 150 ms delay, on the assumption that the
+  /// engine would be running by then. It is not guaranteed: `AppleAudioEngine`
+  /// starts the output unit itself, asynchronously on its own queue, so whether
+  /// the engine is up when the delay elapses depends on how busy that queue is
+  /// and whether the audio session activation succeeded. Losing that race left
+  /// the visualiser dead for the whole track, silently, because the next song's
+  /// attach is the only thing that would try again.
+  ///
+  /// Polling to a condition is honest about the dependency; a fixed delay was
+  /// only ever a guess at how long it takes. `isCurrent` still cancels the
+  /// sequence the instant a newer track supersedes this one, so a track that is
+  /// replaced mid-wait cannot install a tap for stale audio.
+  private func attemptTapInstall(on audioEngine: AVAudioEngine,
+                                isCurrent: @escaping () -> Bool,
+                                attemptsRemaining: Int) {
+    guard attemptsRemaining > 0 else {
+      // Exhausted. The engine is not running, so there is no output to analyse
+      // and `installTap` would throw an ObjC exception rather than fail
+      // gracefully. Giving up here is the correct outcome — playback itself is
+      // unaffected, and a later `attach` will retry.
+      return
     }
+
+    // installTap on a stopped engine throws an uncatchable ObjC exception.
+    guard audioEngine.isRunning else {
+      DispatchQueue.main.asyncAfter(deadline: .now() + Self.tapInstallRetryInterval) { [weak self] in
+        guard let self else { return }
+        guard isCurrent() else { return }
+        self.attemptTapInstall(on: audioEngine,
+                               isCurrent: isCurrent,
+                               attemptsRemaining: attemptsRemaining - 1)
+      }
+      return
+    }
+
+    guard isCurrent() else { return }             // cancelled by a newer song
+    installTapSafely(on: audioEngine)
   }
 
   /// Installs the analysis tap with all guards that prevent ObjC exceptions.
   private func installTapSafely(on audioEngine: AVAudioEngine) {
-    // installTap on a stopped engine throws an uncatchable ObjC exception.
-    guard audioEngine.isRunning else { return }
 
     let mixer  = audioEngine.mainMixerNode
     let format = mixer.outputFormat(forBus: 0)

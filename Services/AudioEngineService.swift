@@ -53,18 +53,25 @@ final class AudioEngineService {
         initialiseEngine()
 
         if let audioFile = currentAudioFile {
+            // No `onPlaybackFinished` assignment here. `play()` owns that wiring,
+            // and a second copy is how the two drifted: this one called
+            // `skipNextSong` directly, bypassing the advance guard, so it would
+            // double-advance against the closure `play` installs.
             manager.currentEngine?.load(audioFile: audioFile)
-            manager.currentEngine?.onPlaybackFinished = { [weak self] in
-                self?.manager.skipNextSong()
-            }
             manager.currentEngine?.setTempo(manager.tempo)
             manager.currentEngine?.setPitch(manager.pitch)
 
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                // Pass the existing queue through, so switching algorithm does not
+                // silently replace the queue with the whole library.
                 self.manager.currentEngine?.seek(to: savedTime)
                 if wasPlaying {
-                    self.manager.play(audioFile: audioFile)
+                    self.manager.play(
+                        audioFile: audioFile,
+                        context: self.manager.playbackQueue,
+                        fromSongsTab: self.manager.playingFromSongsTab
+                    )
                 }
             }
         }

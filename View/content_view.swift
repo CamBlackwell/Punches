@@ -106,6 +106,13 @@ struct ContentView: View {
                     navigateToPlayer = false
                 }
             }
+            // Anchor for UI tests. Applied here, outside the `TabView`, because
+            // the tab style is `.page`: there is no tab bar to query and the four
+            // pages have no individual identifiers, so without this the only
+            // thing a UI test could assert is that the app did not crash on
+            // launch — which is most of what [E20] was about.
+            // See `UITests/Punches3UITests.swift`.
+            .accessibilityIdentifier("punches.root")
         }
         .tint(theme.tint)
         .task {

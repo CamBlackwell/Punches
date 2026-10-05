@@ -6,7 +6,9 @@ Every thread boundary in Punches, and where each one is sound. The short version
 
 ## 1. The model in one paragraph
 
-Punches is nominally single-threaded. There is no actor, no `Sendable` conformance anywhere in the repository, and no custom `DispatchQueue` for state — the only named queue is `audio.engine.queue` inside `AppleAudioEngine` (`AudioEngines/AppleAudioEngine.swift:10`). All application state lives in `@MainActor`-isolated classes by virtue of a build setting, and the only genuine parallelism is three: the AVAudioEngine render/tap thread, a 60 Hz `Timer` on the main run loop, and a handful of `DispatchQueue.main.async` hops.
+Punches is nominally single-threaded. There is no actor, no `Sendable` conformance anywhere in the repository, and no custom `DispatchQueue` for state — the only named queue is `audio.engine.queue` inside `AppleAudioEngine` (`AudioEngines/AppleAudioEngine.swift`), which serialises **every** engine mutation: `load`, `play`, `pause`, `stop` and `seek` all dispatch onto it. All application state lives in `@MainActor`-isolated classes by virtue of a build setting, and the only genuine parallelism is three: the AVAudioEngine render/tap thread, a 60 Hz `Timer` on the main run loop, and a handful of `DispatchQueue.main.async` hops.
+
+> `pause()` used to be the exception — it called `playerNode.pause()` directly on whatever thread the interruption notification arrived on, racing scheduling work already queued. It is now serialised like every sibling. That matters more than it looks: the notification thread is not one the engine knows anything about.
 
 ```
   ┌───────────────────────┐
@@ -62,7 +64,7 @@ The two method annotations:
 | Thread / executor | Where | What runs on it |
 |---|---|---|
 | **AVAudioEngine render + tap** | `UnifiedAudioAnalyser.installTapSafely` — `:335-343` | `writeToRingBuffer(_:)` — see [§4](#4-the-real-time-thread-allocates) |
-| **Main run loop, 60 Hz** | `Timer.scheduledTimer` — `:286-291` | `updateSpectrum()` — all FFT, Q3, A-weighting, stereo and goniometer maths |
+| **Main run loop, 60 Hz** | `Timer.scheduledTimer` in `UnifiedAudioAnalyser` | `updateSpectrum()` — all FFT, Q3, A-weighting, stereo and goniometer maths. The **playback progress tick** is *not* on this row: it is a `DispatchSourceTimer` on `.main`, deliberately, because a `.default`-mode run-loop timer is suppressed during every scroll and throttled in the background ([04 §5](04-audio-pipeline.md#the-tick-is-a-dispatchsourcetimer-not-a-timer)) |
 | **`DispatchQueue.main`** | `audio.engine.queue` — `AppleAudioEngine.swift:10` | node setup (`AppleAudioEngine.swift:238` hops back to main at `:238` to publish) |
 | **Cooperative thread pool** | `AudioImportService` — `:36-53` | the `NSFileCoordinator` copy, via a checked continuation |
 | **Main run loop, per effect** | `AppBackground` — `ShaderEffects.swift:357`, `:386-388` | 60 fps `time` advance, **only while `useFogShader`** (`:388-391`) |
@@ -151,9 +153,13 @@ self.audioAnalyzer.attach(to: engine)
 
 So `generation` is always `0` and `isCurrent` is always `{ true }`. The comment's central claim — "AudioManager bumps its generation counter on every new song so stale closures self-cancel" — describes a mechanism that does not exist. Grepping for `generation` across the repository returns only the four lines in `UnifiedAudioAnalyser` itself.
 
-> **The race this leaves open.** `attach` waits 150 ms on the main queue before installing the tap. If the user skips a track during that window, the *old* pending closure still fires, `isCurrent()` returns `true`, and a tap is installed on an engine that now belongs to a different song. `AudioEngineService` does call `detach(from: oldEngine)` on teardown (`Services/AudioEngineService.swift:46`), which removes the tap — but a closure that has already been enqueued and is executing `installTapSafely` concurrently with that `detach` is not ordered against it. The symptom is analysis for song N+1 driven by song N's audio, or an "already has a tap" ObjC exception. Implementing the generation counter the comment already describes is a ~5-line fix.
+> **The race this leaves open — and it is now fixed.** `attach` used to wait a fixed 150 ms on the main queue before installing the tap. If the user skipped a track during that window, the *old* pending closure still fired, `isCurrent()` returned `true`, and a tap was installed on an engine that now belonged to a different song. `AudioEngineService` does call `detach(from: oldEngine)` on teardown, which removes the tap — but a closure already enqueued and executing `installTapSafely` concurrently with that `detach` is not ordered against it. The symptom was analysis for song N+1 driven by song N's audio, or an "already has a tap" ObjC exception.
+>
+> The fixed delay is also gone, and the reason it had to go is that **`AppleAudioEngine` no longer starts the engine in `init`** ([04 §1](04-audio-pipeline.md#1-the-engine-graph)). `installTapSafely` guards on `audioEngine.isRunning`, so when the start moved into `play()` the "it will be running by now" assumption stopped being safe. The install now **polls to the condition**: every 50 ms, up to 30 times, with `isCurrent()` checked on every attempt. A fixed delay was only ever a guess at how long the start takes; losing the race left the visualiser dead for the whole track, silently, because the next song's attach was the only thing that would retry.
 
-The same "sleep and hope" pattern appears twice more: `AudioManager.attachAnalyzerSafely` (`audio_manager.swift:264`, 0.12 s) and `AudioPlaybackService.swift:98` (0.15 s). `UnifiedAudioAnalyser:308-309` explicitly notes *"Single 150 ms delay — enough for AVAudioEngine to finish its internal graph reconfiguration after play(). No nested asyncAfter."* — i.e. an earlier version stacked delays, and the fix was to stack fewer. The right answer is to observe the engine's actual state, not to guess a duration.
+The same "sleep and hope" pattern still appears elsewhere: `AudioManager.attachAnalyzerSafely` (0.12 s) and a 0.15 s delay in `AudioPlaybackService`. Those are UI-preference waits, not correctness waits, so they are lower stakes — but the general principle holds: **when a delay stands in for a state you can actually observe, observe it.**
+
+The same "sleep and hope" pattern appears twice more: `AudioManager.attachAnalyzerSafely` (0.12 s) and a 0.15 s delay in `AudioPlaybackService`. Those are UI-preference waits, not correctness waits, so they are lower stakes — but the general principle holds: **when a delay stands in for a state you can actually observe, observe it.**
 
 ---
 
@@ -281,7 +287,7 @@ The natural improvement is a dedicated `DispatchSourceTimer` on a serial queue t
 | 2 | **Critical** | `writeToRingBuffer` is called from the RT thread but the type is main-actor-isolated; violation unobserved only because the target does not compile | [§4](#4-the-real-time-thread-allocates) |
 | 3 | **High** | The documented `generation` cancellation gate is never wired up; a stale 150 ms `asyncAfter` can install a tap on the wrong engine | [§5](#5-the-two-documented-safeguards-that-are-not-implemented) |
 | 4 | **High** | `withCheckedThrowingContinuation` has two unguarded `resume` paths → double-resume trap | [§8](#8-structured-concurrency-one-continuation-double-resume-hazard) |
-| 5 | **High** | ~~`Task.detached` and `savePlaylists()` race on the same `UserDefaults` key → silent playlist loss~~ **RESOLVED** in the working tree; no serial write queue for the other keys ([C9](14-known-issues.md#c9-no-serial-write-queue-for-userdefaults)) remains | [§9](#9-taskdetached-racing-userdefaults-resolved) |
+| 5 | **High** | ~~`Task.detached` and `savePlaylists()` race on the same `UserDefaults` key → silent playlist loss~~ **RESOLVED** in the working tree; no serial write queue for the other keys ([C9](14-known-issues.md#c9-no-serial-write-queue-for-userdefaults)) remains | [§9](#9-taskdetached-racing-userdefaults--resolved) |
 | 6 | Medium | Isolation is invisible: 0 type-level `@MainActor`, 0 `Sendable`, 0 `nonisolated` | [§2](#2-isolation-comes-from-a-build-setting-not-the-source) |
 | 7 | Medium | `RingBuffer` is labelled "Lock-Free" and uses `NSLock` | [§6](#6-locking) |
 | 8 | Medium | `reorderPlaylistSongs` mutates main state across an unnecessary hop, capturing `index` by value | [§7](#7-hopping-to-main) |
@@ -292,7 +298,7 @@ The natural improvement is a dedicated `DispatchSourceTimer` on a serial queue t
 
 ### 11.1 Fix order
 
-Findings 1 and 2 are the same bug and must be fixed together: make `RingBuffer` a non-isolated value type over preallocated storage, and give the analyser a `nonisolated` RT entry point. Do this **first**, because repairing target membership ([03](03-project-structure-and-build.md#55-the-test-targets-are-empty-too)) will turn finding 2 into a compile error and stop the build.
+Findings 1 and 2 are the same bug and must be fixed together: make `RingBuffer` a non-isolated value type over preallocated storage, and give the analyser a `nonisolated` RT entry point. Do this **first**, because repairing target membership ([03](03-project-structure-and-build.md#55-the-test-folders-are-bound-to-the-test-targets-not-the-app)) will turn finding 2 into a compile error and stop the build.
 
 Finding 3 is a five-line fix that removes a whole class of intermittent audio bugs. Finding 5 is a one-line deletion. Findings 4 and 8 are small but need care.
 

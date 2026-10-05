@@ -72,6 +72,22 @@ final class AudioLibraryService {
     /// fails the reconciler picks the file up on the next pass, and if the row
     /// write fails the file is still recoverable from Trash.
     func deleteAudioFile(_ audioFile: AudioFile) {
+        // The successor is captured *before* the removal, because afterwards the
+        // deleted track is gone from the queue and there is no index to read it
+        // from. `isLooping` is deliberately not consulted: loop decides what
+        // happens when a track *ends*, and this one is being removed while the
+        // user is looking at it. Wrapping to the top of the queue here would
+        // jump the playhead somewhere unrelated.
+        let successor: AudioFile? = {
+            guard manager.currentlyPlayingID == audioFile.id else { return nil }
+            let queue = manager.playbackQueue
+            guard let index = queue.firstIndex(where: { $0.id == audioFile.id }),
+                  index + 1 < queue.count else { return nil }
+            return queue[index + 1]
+        }()
+
+        // The engine is still holding this file's audio, so stopping is not
+        // optional even when there is a successor to hand over to.
         if manager.currentlyPlayingID == audioFile.id {
             manager.stop()
         }
@@ -95,6 +111,20 @@ final class AudioLibraryService {
 
         manager.artworkService.deleteArtworkIfUnused(audioFile.artworkImageName)
         manager.displayedSongs = manager.sortedAudioFiles
+
+        // Hand the player to the track that took the deleted one's place, at
+        // whichever play/pause state it was in. Without this the deletion left
+        // no current track at all, and the next tap of Play started again from
+        // the top of the queue — so deleting the fifth song of twelve rewound
+        // the user to song one.
+        //
+        // Re-checked against the queue *after* removal: the successor can itself
+        // have been removed from the queue by a duplicate id or by a
+        // reconciler pass between the two statements.
+        if let successor,
+           manager.playbackQueue.contains(where: { $0.id == successor.id }) {
+            manager.playbackService.handover(to: successor)
+        }
     }
 
     /// Renames a track. The file itself is not touched — `fileName` is an opaque

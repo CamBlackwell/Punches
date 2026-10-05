@@ -91,7 +91,9 @@ struct SillySpeed: App {
 
 ## 3. The `AudioManager` façade and its 7 services
 
-`AudioManager` is a **state container plus a pure delegation shell**. It holds *no* behaviour beyond `init`/`deinit`, `attachAnalyzerSafely`, and the `AVAudioPlayerDelegate` conformance. Every other method is a one-line forward.
+`AudioManager` is a **state container plus a pure delegation shell**. It holds *no* behaviour beyond `init`/`deinit` and `attachAnalyzerSafely`. Every other method is a one-line forward.
+
+> It used to also carry an `AVAudioPlayerDelegate` conformance with an `audioPlayerDidFinishPlaying` method. Nothing in the project is an `AVAudioPlayer` — the engine is `AVAudioEngine` + `AVAudioPlayerNode` — so that method could never fire, and anyone reading `audio_manager.swift` alone would reasonably conclude it was the playback-completion path. It has been deleted, with a comment at the site, so the conclusion does not have to be re-derived.
 
 ```swift
 // audio_manager.swift:39-45

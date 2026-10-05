@@ -187,7 +187,14 @@ struct AudioPlayerView: View {
                     if audioManager.currentlyPlayingID == currentFile.id {
                         audioManager.togglePlayPause()
                     } else {
-                        audioManager.play(audioFile: currentFile)
+                        // Pass the visible list. Calling `play(audioFile:)` with
+                        // no context lets it fall back to the whole library
+                        // whenever the track is not already queued, which
+                        // replaced the queue behind the user's back mid-session.
+                        let context = audioManager.playbackQueue.contains(where: { $0.id == currentFile.id })
+                            ? nil
+                            : audioManager.displayedSongs
+                        audioManager.play(audioFile: currentFile, context: context)
                     }
                 }) {
                     ZStack {
@@ -216,13 +223,17 @@ struct AudioPlayerView: View {
                 Button(action: {
                     audioManager.isLooping.toggle()
                 }) {
-                    Image(systemName: audioManager.isLooping ? "repeat.1" : "repeat")
+                    // Always `repeat`. The icon used to switch to `repeat.1`,
+                    // advertising a repeat-one mode that did not exist — the flag
+                    // is only ever read as repeat-the-whole-queue.
+                    Image(systemName: "repeat")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(audioManager.isLooping ? theme.accentColor : theme.secondaryTextColor)
                         .padding(10)
                         .clipShape(Circle())
                 }
                 .buttonStyle(PlainButtonStyle())
+                .accessibilityLabel(audioManager.isLooping ? "Repeat on" : "Repeat off")
             }
         }
     }

@@ -292,11 +292,11 @@ savePlaylists()                                                          // :218
 if manager.playingFromSongsTab { manager.playbackQueue = manager.displayedSongs }   // :220-222
 ```
 
-⚠️ Note that `reorderSongs` has the *opposite* defect from `reorderPlaylistSongs` (§6.2): it finds the master index **before** the move and holds no dispatch hop, so it cannot write to the wrong playlist. It is the safer of the two implementations and the more dangerous of the two semantics.
+⚠️ Note that `reorderSongs` and `reorderPlaylistSongs` (§6.2) now differ only in *semantics*, not in safety. Both find their target index before mutating, both write back synchronously, and both rebuild `playbackQueue` — under opposite `playingFromSongsTab` guards. `reorderSongs` writes the **master** playlist; `reorderPlaylistSongs` writes the **named** one.
 
 Import a single new file and your entire hand-sorted Songs list reverts to newest-first. That is a real, user-visible bug class, not a hypothetical.
 
-> **The decision to make first:** is manual order or date order the intent? If manual, drop the `.sorted` on `PlaylistService.swift:20` and append new imports to the end of `audioFileIDs`. If date order, remove the reorder affordance rather than accepting an order that is discarded. Everything above is a consequence of that answer being deferred — including [C4](14-known-issues.md#c4-reordering-does-not-update-playbackqueue) and [C5](14-known-issues.md#c5-reorderplaylist-songs-captures-index-across-a-dispatch-hop), which are the queue-side and capture-side versions of the same split.
+> **The decision to make first:** is manual order or date order the intent? If manual, drop the `.sorted` on `PlaylistService.swift:20` and append new imports to the end of `audioFileIDs`. If date order, remove the reorder affordance rather than accepting an order that is discarded. Everything above is a consequence of that answer being deferred — including [C4](14-known-issues.md#c4-reordering-does-not-update-playbackqueue) and [C5](14-known-issues.md#c5-reorderplaylistsongs-captures-index-across-a-dispatch-hop), which are the queue-side and capture-side versions of the same split.
 
 2. **Every "other collections" list must union both pages.** Albums and playlists are one array, so a list that filters to one page silently makes the other unreachable as a target. Three different shapes are in use, and all three are correct as long as the union is present:
    - **Single unioned list** — `PlaylistDetailView.transferTargets` (`View/PlaylisList_view.swift:29`) and `AlbumDetailView.transferTargets(excluding:)` (`View/Album_view.swift:680`) are `sortedPlaylists + sortedAlbums` minus the current collection. One dialog, every destination.
@@ -360,17 +360,20 @@ The `fileExists` filter in the fallback branch is the historical behaviour and i
 ### 4.2 `deleteAudioFile(_:)` — row first, then bytes
 
 ```swift
-// Services/AudioLibraryService.swift:74-98
+// Services/AudioLibraryService.swift
 ```
+1. capture the **successor** — the track after this one in `playbackQueue`, if this is the current track
+2. `if currentlyPlayingID == audioFile.id { manager.stop() }`
+3. drop it from `audioFiles`, from **every** playlist's `audioFileIDs`, and from `playbackQueue`
+4. `saveAudioFiles()` — **one** `persist`, not three saves
+5. `reconciler.moveToTrash(audioFile.fileURL, reason: "deleted")`
+6. `deleteArtworkIfUnused`
+7. `displayedSongs = sortedAudioFiles` — **re-sorts, destroying the manual order (§3.3)**
+8. `playbackService.handover(to: successor)` — see below
 
-1. `if currentlyPlayingID == audioFile.id { manager.stop() }` (`:75-77`)
-2. drop it from `audioFiles`, from **every** playlist's `audioFileIDs`, and from `playbackQueue` (`:79-83`)
-3. `saveAudioFiles()` (`:85`) — **one** `persist`, not three saves
-4. `reconciler.moveToTrash(audioFile.fileURL, reason: "deleted")` (`:90-94`)
-5. `deleteArtworkIfUnused` (`:96`)
-6. `displayedSongs = sortedAudioFiles` (`:97`) — **re-sorts, destroying the manual order (§3.3)**
+**The order of 4 and 5 is the whole point, and it is inverted from the obvious one.** The row is written before the bytes are moved. If the move fails, the reconciler finds an untracked file and picks it up on the next pass; if the row write fails, the bytes are still in `Trash/` and recoverable. Doing it the other way round — delete the file, then fail to write the row — leaves a library row pointing at nothing with no way back. `try?` on the move is deliberate and commented as such: the bytes are already gone from the library's point of view, so a failure is not worth interrupting the user for.
 
-**The order of 3 and 4 is the whole point, and it is inverted from the obvious one.** The row is written before the bytes are moved. If the move fails, the reconciler finds an untracked file and picks it up on the next pass; if the row write fails, the bytes are still in `Trash/` and recoverable. Doing it the other way round — delete the file, then fail to write the row — leaves a library row pointing at nothing with no way back. `try?` on the move is deliberate and commented as such: the bytes are already gone from the library's point of view, so a failure is not worth interrupting the user for.
+**Step 1 and 8 are the queue-integrity half.** Deleting the track you are on used to leave *no* current track: `stop()` cleared `currentlyPlayingID`, and the next tap of Play started from `playbackQueue.first` — so deleting the fifth song of twelve rewound you to song one. The successor is now captured before the removal (afterwards the deleted track's index no longer exists) and handed to `AudioPlaybackService.handover(to:)`, which loads it **at whatever play/pause state you were in** rather than forcing a track on you. `isLooping` is deliberately not consulted: loop decides what happens when a track *ends*, and this one is being removed while you are looking at it.
 
 The `displayedSongs` reset at `:97` happens **after** step 2 scrubbed the id, so unlike the old ordering it no longer reads a dangling ID — but it still re-sorts, which is the remaining defect in this function.
 
@@ -415,8 +418,8 @@ Every mutator follows the same shape: `guard let index = firstIndex(where: id)`,
 | `loadOrCreateMasterPlaylist()` | `:175` | — | §3.1 |
 | `reorderSongs(from:to:)` | `:210` | index | §6.1 |
 | **`moveCollection(in:from:to:)`** | **`:238`** | **page is non-empty** | **renumbers the whole page densely, one save** — §5.1 |
-| `reorderPlaylistSongs(in:from:to:)` | `:259` | index | §6.2 — still has the dispatch-hop defect |
-| `updatePlaylistOrder(_:with:)` | `:273` | index | writes ids **and** rebuilds `playbackQueue` |
+| `reorderPlaylistSongs(in:from:to:)` | index | index | §6.2 — writes ids **and** rebuilds `playbackQueue` |
+| `updatePlaylistOrder(_:with:)` | index | index | writes ids **and** rebuilds `playbackQueue` |
 | `createPlaylist(name:isAlbum:artist:)` | `:291` | none | **returns the new `Playlist`** so a caller can fill it in the same turn |
 | `deletePlaylist(_:)` | `:310` | master id | also `deleteArtworkIfUnused`, **and records a tag suppression** — §5.1 |
 | `renamePlaylist(_:to:)` | `:324` | index | no empty-name check |
@@ -491,18 +494,19 @@ Three entry points, all funnelling into the same array-of-UUIDs representation.
 
 ### 6.2 Single-item move, inside a playlist
 
-`PlaylistService.reorderPlaylistSongs(in:from:to:)` (`:259-271`) — copies the playlist out, moves on the **local copy**, then hops to main to write back:
+`PlaylistService.reorderPlaylistSongs(in:from:to:)` — copies the playlist out, moves on the **local copy**, then writes back:
 
 ```swift
 var updatedPlaylist = manager.playlists[index]
 updatedPlaylist.audioFileIDs.move(fromOffsets: source, toOffset: destination)
-DispatchQueue.main.async { [weak self] in
-    self.manager.playlists[index] = updatedPlaylist
-    self.savePlaylists()
-}
+manager.playlists[index] = updatedPlaylist
+if !manager.playingFromSongsTab { /* rebuild playbackQueue from updatedPlaylist.audioFileIDs */ }
+self.savePlaylists()
 ```
 
-> **⚠️ This async hop is both unnecessary and dangerous.** `PlaylistService` is not actor-isolated, `move(fromOffsets:toOffset:)` is called on whatever thread SwiftUI's `onMove` fires on (always main, in practice), and the closure captures the **integer `index`** by value (`:268`). If *any* playlist is deleted, created, or reordered between the `move` and the `main.async` body running, `index` now points at a **different playlist** and this line overwrites it wholesale. The mutation also does not update `playbackQueue`, unlike its Songs-tab sibling — so reordering inside a playlist leaves the playing queue stale.
+**This used to be wrong in two ways, both now fixed.** It hopped to `DispatchQueue.main.async` before writing, and the closure captured the **integer `index`** by value — so if any playlist was deleted, created, or reordered in that window, `index` pointed at a *different* playlist and overwrote it wholesale. And unlike its Songs-tab sibling, it did not rebuild `playbackQueue` at all, so reordering inside a playlist left the playing queue in the old order for the rest of the session ([14 · C4](14-known-issues.md#c4-reordering-does-not-update-playbackqueue), [C5](14-known-issues.md#c5-reorderplaylistsongs-captures-index-across-a-dispatch-hop)).
+
+The `playingFromSongsTab` guard is the same asymmetry §6.3 uses, and for the same reason: the playlist is the source of truth unless the Songs tab is.
 
 ### 6.3 Multi-select drag
 
@@ -529,7 +533,7 @@ Three things it gets right that the others don't:
 
 Its caller in `View/content_view.swift:972-988` guards it correctly: it only takes the multi-select path `if isMultiSelectMode && !selectedFileIDs.isEmpty` (`:973`) **and** `source.allSatisfy({ selectedIndices.contains($0) })` (`:978`) — i.e. a drag that starts on a non-selected row falls through to the plain single-item move.
 
-> **The `playlist:` parameter is dead, and it is the reason `C4` is still open.** `reorderSelectedSongs(selectedIDs:to:in:playlist:)` defaults `playlist` to `nil` (`:205`) and **no caller ever passes it** — the playlist-detail list's `.onMove` (`View/PlaylisList_view.swift:93-95`) only calls `reorderPlaylistSongs`, which has the capture defect instead (§6.2). So the *only* fully-correct reorder primitive in the codebase cannot reach either place that needs it, and `PlaylistDetailView` has no multi-select drag at all despite having a full multi-select mode. **The one-line fix that would close C4, C5 and this at once is to make `PlaylistDetailView`'s `.onMove` call `reorderSelectedSongs(in:playlist:)` and pass the playlist.** It is left undone deliberately: it touches the one reorder path that currently *works*, and it would be unreviewable bundled with four unrelated issues.
+> **The `playlist:` parameter is still dead.** `reorderSelectedSongs(selectedIDs:to:in:playlist:)` defaults `playlist` to `nil` and **no caller passes it** — the playlist-detail list's `.onMove` only calls `reorderPlaylistSongs` (§6.2). Both are now correct, so the *reason* the dead parameter mattered is gone, but `PlaylistDetailView` still has no multi-select drag despite having a full multi-select mode, and the more capable primitive still cannot reach it. **Still open, and worth doing:** make `PlaylistDetailView`'s `.onMove` call `reorderSelectedSongs(in:playlist:)` and pass the playlist. It is left undone because it is a behaviour change to a path that now works, not a bug fix.
 
 ---
 
@@ -610,7 +614,7 @@ Three bugs, two of them now fixed and one still open:
 >
 > The single-file context menu was also fixed to read `sortedPlaylists`/`sortedAlbums` instead of the raw `manager.playlists` array, which had been exposing the **master playlist** as a batch-add destination named `__MASTER_SONGS__`.
 
-**Still open:** the `.onMove` here (`:93-95`) calls `reorderPlaylistSongs`, which has the captured-`index`-across-a-dispatch-hop defect (§6.2) *and* does not rebuild `playbackQueue`. `AlbumDetailView` uses the correct `updatePlaylistOrder(_:with:)` instead. The two views are otherwise near-parallel, so the fix is to make this one call the same primitive.
+**Fixed.** The `.onMove` here calls `reorderPlaylistSongs`, which no longer has the captured-`index`-across-a-dispatch-hop defect and now rebuilds `playbackQueue` (§6.2). `AlbumDetailView` uses `updatePlaylistOrder(_:with:)`, which was already correct. The two are now equivalent.
 
 ### 8.4 Context menus, side by side
 
@@ -647,7 +651,7 @@ The playlist-detail versions use **lowercase, inconsistent labels** — `"share 
 
 `albumContextMenu(_:)` also carries **"Detach from Tags"**, shown only when `tagKey != nil`. That is the one-way door out of being a projection: it clears the key and any suppression, and the album keeps its songs as an ordinary hand-made one (§5.1).
 
-**Reorder is disabled while a search is active, and this is not polish.** `AlbumsListView` renders `filteredAlbums`, and `.onMove`'s indices are positions in whatever array the `ForEach` renders — dragging the third of five search results would renumber three unrelated positions against the *unfiltered* page. So `reorderableAlbums` (`:75`) returns `nil` while `isFiltered` is true, and `isFiltered` comes down from `ContentView` as `!searchText.isEmpty` — the only place that knows about the search string. Nothing re-derives "is this a search result" by filtering inside the view: the same string could filter to the whole page, and then the indices would be right by accident. This is [14](14-known-issues.md#c5-reorderplaylist-songs-captures-index-across-a-dispatch-hop)'s lesson one level up — the list being renumbered and the list on screen must be the same list, or there must be no list.
+**Reorder is disabled while a search is active, and this is not polish.** `AlbumsListView` renders `filteredAlbums`, and `.onMove`'s indices are positions in whatever array the `ForEach` renders — dragging the third of five search results would renumber three unrelated positions against the *unfiltered* page. So `reorderableAlbums` (`:75`) returns `nil` while `isFiltered` is true, and `isFiltered` comes down from `ContentView` as `!searchText.isEmpty` — the only place that knows about the search string. Nothing re-derives "is this a search result" by filtering inside the view: the same string could filter to the whole page, and then the indices would be right by accident. This is [14](14-known-issues.md#c5-reorderplaylistsongs-captures-index-across-a-dispatch-hop)'s lesson one level up — the list being renumbered and the list on screen must be the same list, or there must be no list.
 
 `AlbumDetailView` (`:327-695`) deliberately does **not** reuse `PlaylistDetailView`, because the presentation is different enough that forcing a shared body would mean more `if` branches than shared layout:
 
@@ -694,7 +698,7 @@ The playlist-detail versions use **lowercase, inconsistent labels** — `"share 
 | `filteredSongs` / `filteredPlaylists` / `filteredAlbums` | they filter but the empty states don't (§3.4) — searching with no matches shows a blank page with no message. **`filteredAlbums` is also why album reorder is disabled during a search (§8.6)** |
 | `cleanupOrphanedFiles` | the `"Artwork"` literal exemption and the fact it runs on every launch after imports |
 | `savePlaylists` | one call is a full `LibraryStore.persist` **mirror** of the library, by design and deliberately not made incremental (§5). Every batch path must funnel through it once, not once per row |
-| `reorderPlaylistSongs`'s `main.async` | the captured `index` (`:268`) can target a different collection after any concurrent mutation — `AlbumDetailView` uses `updatePlaylistOrder` instead. **`PlaylistDetailView` still uses this one** (§8.3) |
+| `reorderPlaylistSongs` | it now writes synchronously and rebuilds `playbackQueue` under the `!playingFromSongsTab` guard (§6.2). **Do not reintroduce a `DispatchQueue.main.async` hop** — the closure captured the integer index by value and could overwrite a different playlist. Its dead `playlist` sibling parameter is §6.3 |
 | `moveCollection(in:from:to:)` | **the page is a parameter on purpose (§5.1).** A service that discovered the page itself would renumber one list using another's indices the first time a search was active |
 | `MultiSelectContextMenu` | **the only path from a multi-selection to a collection (§8.4).** Anything that adds a collection kind must be added to *both* `Menu` sections here or it is unreachable |
 | `libraryOrderedSelection(for:in:)` | it exists to order by the **source list**, not by `Set` iteration (§8.4). Any new batch action built on a `Set<UUID>` needs it too |

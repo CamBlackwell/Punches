@@ -33,11 +33,21 @@ A severity-ranked register of every defect, dead path, and documentation error f
 
 | Severity | Count |
 |---|---|
-| Critical | 17 |
-| High | 34 |
-| Medium | 33 |
+| Critical | 19 |
+| High | 36 |
+| Medium | 34 |
 | Low | 18 |
-| **Total** | **102** |
+| **Total** | **107** |
+
+**Five entries were added in the playback-continuation pass** (E18–E21 and C21) and the following are now fixed: A2 (partly — `Punches3Tests` only), C4, C5, C6, C21, D1, E14, E15, E16, E20. E18, E19, E20, E21 and C21 were **not in the register when the work started**; the E-entries were found by tracing the existing entries, C21 by auditing every `playbackQueue` writer, and E20 by making the tests runnable at all.
+
+Counts here were previously stated as 102 and, further back, 91. The register's own total had drifted from its contents. Recount programmatically rather than by hand:
+
+```sh
+# Every entry starts with a bold severity immediately after its heading.
+grep -c '^### [A-Z][0-9]' docs/14-known-issues.md          # 107
+grep -o '^\*\*\(Critical\|High\|Medium\|Low\)' docs/14-known-issues.md | sort | uniq -c
+```
 
 The table counts entries, not distinct defects: [A3](#a3-app-group-entitlement-is-empty) and [B1](#b1-app-group-entitlement-is-empty) are the same root cause documented from the build side and the import side, and several entries share a single fix.
 
@@ -48,12 +58,12 @@ User-reported symptoms and the entries that explain them. A single report can ha
 | Symptom (as reported) | Entries | Note |
 |---|---|---|
 | *"Occasionally songs play with dropped pitch but is still set at 0pt change."* (#66) | [E17](#e17-every-track-whose-rate-differs-from-the-audio-session-was-played-slow-or-fast-and-detuned-by-the-same-ratio) | One entry, and the "0pt change" wording is the tell rather than a contradiction: the pitch control really was at `0.0` and the tempo really at `1.0`, because the corruption happened upstream of the time-pitch unit, in the format it was connected with. Fixed — after correcting the first fix, which removed only one of the two rate-pinning mechanisms and left the symptom identical. |
-| *"A call stops the music but it is still registered as playing."* | [E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing) (partially fixed) · [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block) | E14 is the direct cause, and its published-state half is now fixed: the `.began` handler calls `updateNowPlayingInfo()`, so the rate is rewritten to `0.0` instead of staying at `1.0`. Still open in E14: nothing restarts the timer when `.ended` arrives without `.shouldResume`, so the in-app player stays frozen until the user taps something. E16 is a separate aggravator: when it fires, the lock-screen controls are inert too, so the user has no remote way to recover. The two compose — a failed session setup removes the only workaround E14 still needs. |
+| *"A call stops the music but it is still registered as playing."* | [E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing) (fixed) · [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block) (fixed) | Both fixed. E14 was the direct cause and had two halves: the published state (the rate stayed at `1.0`) and the in-app player (frozen, because nothing restarted the tick when `.ended` arrived without `.shouldResume` — the normal outcome of a phone call). E16 was a separate aggravator: a failed session setup left the lock-screen controls inert, so there was no remote way to recover. They composed into one dead end from either direction, and both are now closed. |
 | *"There is no file permanence; files disappear after closing the app."* | [C12](#c12-an-empty-library-index-makes-the-app-delete-every-file-it-can-see) · [C2](#c2-cleanuporphanedfiles-deletes-untracked-files) · [B7](#b7-processpendingimports-deletes-the-whole-directory) | C12 is the complete chain and the one to fix first: the index goes empty, then cleanup deletes the files. |
-| *"Auto next song needs some work."* | [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) · [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue) · [C4](#c4-reordering-does-not-update-playbackqueue) | E15 is the duplication and the stale-callback race. D1 is why the loop toggle appears not to work. |
+| *"Auto next song needs some work."* | [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) (fixed) · [E19](#e19-the-progress-timer-is-a-run-loop-timer-so-it-stops-when-it-matters) (fixed) · [E18](#e18-seeking-near-the-end-of-a-track-advanced-the-queue) (fixed) · [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue) (fixed) · [C4](#c4-reordering-does-not-update-playbackqueue) (fixed) · [C21](#c21-deleting-the-playing-track-silently-rewound-the-queue-to-the-first-song) (fixed) | All six are fixed. E15 was the duplication and the stale-callback race. E19 was the tick's run-loop mode, which stopped it during every scroll and was throttled in the background. E18 was the same stale-callback mechanism reached through `seek()`. D1 is why the loop toggle appeared not to work. C4 and C21 are the queue's two mutation sites that did not maintain it: a reorder changed nothing about what played next, and deleting the playing song restarted from the top. |
 | *"Songs should default to the top of the list, not the bottom."* | [C13](#c13-the-app-opens-on-the-oldest-import-not-the-top-of-the-list) · [C14](#c14-manual-sort-order-is-silently-discarded) | The sort is correct. C13 is the unsorted `audioFiles.first` fallback used for the default selection; C14 is manual order being discarded on recompute. |
 | *"There is no effective metadata integration."* | [D14](#d14-no-metadata-is-read-anywhere-the-title-is-the-filename) (fixed) · [C8](#c8-the-two-audiofiletitle-fallbacks-disagree) (fixed) | D14 was the whole gap: the model had no fields for artist/album/genre and nothing read tags. Ten fields are now read, stored and shown. C8 was why even the filename-derived title was inconsistent — the two `AudioFile` initialisers disagreed about stripping the extension. |
-| *"Songs sometimes don't skip when out of the app."* | [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block) · [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) | E16 is the "sometimes": if `setActive` throws at launch, no remote handler is ever registered. E15's background timer throttling is the other half. |
+| *"Songs sometimes don't skip when out of the app."* | [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block) · [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) | Both fixed. E16 was the "sometimes": remote command targets were registered inside the same `do` block as the two throwing session calls, so a throw at launch left the lock screen, Control Center and headphone buttons permanently inert. E19 was the other half — the progress tick was a `.default`-mode run-loop timer, suppressed during every scroll and throttled in exactly the backgrounded state the report describes. |
 | *"it now pops up with an error when importing, however all audio types come up with the message that they are unsupported format"* | [C16](#c16-a-file-with-no-extension-could-never-be-imported-and-every-failure-was-reported-as-unsupported-format) | C16 is both causes at once: a staged file that lost its extension so `AVURLAsset` could not open it, and a `classify` that reported every error as an unsupported codec. "All audio types" is the tell — a real codec limit is format-specific, a filename problem is not. |
 | *"the library database could not be written. This is not a problem with the file. A library query failed: FOREIGN KEY constraint failed"* | [C17](#c17-every-import-failed-with-a-foreign-key-violation-discarding-the-track-it-had-just-committed) (fixed) | C17 alone. The message blamed the database and the file, and both were right to be blamed for the wrong reason: the membership row could not be written because the master playlist did not exist, and `INSERT OR IGNORE` does not suppress a foreign-key violation, so the whole commit rolled back. Every file, every time, including on a brand-new install. It only became visible once [C16](#c16-a-file-with-no-extension-could-never-be-imported-and-every-failure-was-reported-as-unsupported-format) stopped throwing first — `commitImport` had never run before that. |
 | *"When I add a song it is not shown on the songs list view after I add it."* | [C15](#c15-exec-prepared-every-statement-and-never-stepped-it-so-no-write-ever-ran) · [C13](#c13-the-app-opens-on-the-oldest-import-not-the-top-of-the-list) | C15 was the whole cause: no write in the library layer had ever executed, so the import aborted before it could refresh `displayedSongs`. Fixed. C13 carries a second, independent path to the same symptom — a `displayedSongs` refresh trapped inside the master-playlist guard — and is still open. |
@@ -77,7 +87,7 @@ User-reported symptoms and the entries that explain them. A single report can ha
 
 **Fixed, and the earlier fix in this entry was wrong.** A previous revision of this entry added each missing filename to its folder's `membershipExceptions` and forbade deleting the exception sets. That diagnosis was incorrect: it inferred "inclusion allowlist" semantics from `Album_view.swift`'s failure, when the folder simply was not bound to the target, so no allowlist was in play. The actual repair, from the `laptop` merge, was to **delete the four exception sets and list the four groups in `fileSystemSynchronizedGroups`** — the change this entry previously prohibited.
 
-**Measured result:** `Punches3.SwiftFileList` now contains all **39** project Swift files, and both the simulator and device builds succeed with zero errors. Membership is unchanged for `AudioShare`, which was already bound by its exception set's `target` field despite being absent from `fileSystemSynchronizedGroups`.
+**Measured result:** `Punches3.SwiftFileList` now contains every Swift file the app ships — **43** entries, one of them generated — and both the simulator and device builds succeed with zero errors. See [03 §5.3](03-project-structure-and-build.md#53-the-result) for the recount, which is the only version of that number that survives a new file being added. Membership is unchanged for `AudioShare`, which was already bound by its exception set's `target` field despite being absent from `fileSystemSynchronizedGroups`.
 
 **If a new file fails to appear in a build:** first confirm it is not at the repository root (§5.4 of [03](03-project-structure-and-build.md)) — root files need the three manual entries. Inside a synchronized folder, membership is automatic; the real cause is nearly always a compile error *in that file*, not a missing project entry.
 
@@ -91,17 +101,36 @@ User-reported symptoms and the entries that explain them. A single report can ha
 
 ### A2 Both test targets are empty
 
-**Critical.**
+**Critical — fixed for `Punches3Tests`; still open for `Punches3UITests`.**
 
-`Punches3Tests`' Sources phase is `files = ()` (`:403-409`), and the `Tests` exception set for that target excludes both test files (`:73-80`). `Punches3UITests` is the same (`:410-416`) and no XCUITest file exists. `⌘U` and `xcodebuild test` build empty bundles.
+`Punches3Tests`' Sources phase was `files = ()`, **and** — this is the part that is easy to get wrong — the `Tests` folder was not in the target's `fileSystemSynchronizedGroups` at all, while the *app* target's was. So the app target was compiling both test files and the test target had no access to either. `Punches3UITests` had no sources and no XCUITest file. `⌘U` and `xcodebuild test` built empty bundles.
 
-**Fix:** clear the `Punches3Tests` exception set so `Q3analysertests.swift` becomes a member. Delete the `Punches3UITests` target or add tests to it.
+**What changed:**
+
+- The `Tests` group is now in `Punches3Tests`'s `fileSystemSynchronizedGroups`, so files added there are picked up automatically rather than needing a per-file entry.
+- **`Tests` was removed from the *app* target's synchronized groups entirely.** This is the better half of the fix. The previous arrangement kept test code in the shipping binary and maintained a *membership exception list* to keep individual files out of it — an allowlist of exclusions that has to be edited every time a file is added, and which Xcode rewrites under you (an edit to add an exclusion was silently reverted during a build while this was being fixed). Removing the folder from the app target makes the mistake impossible rather than merely guarded against.
+- `Tests/PlaybackContinuationTests.swift` was added: 18 cases over the queue-advance decision and the buffer-generation guard.
+- The two stale files remain excluded from the test target — see below for why one of them still cannot be restored.
+
+**Why `Q3analysertests.swift` is still excluded.** It begins `@testable import silly_speed_ios`, but the module is named `Punches3` (`PRODUCT_NAME = $(TARGET_NAME)`; there is no `PRODUCT_MODULE_NAME` override). The file cannot compile as written — it is stale by two renames, not merely unscheduled. Restoring it is a real task, not a project-file edit: fix the import, then deal with whatever its assertions expect. It is also unrelated to playback, so it was left alone rather than pulled into a playback change. `FrequencyAllignmenttest.swift` stays excluded for the original reason — see [D7](#d7-frequencyallignmenttestswift-is-not-a-test); it is not a test, and admitting it would add a file that only prints.
+
+**One thing had to be fixed before any test could run at all, and it was not a project-file problem.** `AudioManager.init()` constructs the audio engine, and `AppleAudioEngine.init()` did three things that each abort the process outright in an environment without working audio hardware:
+
+| Call | Failure | Catchable? |
+|---|---|---|
+| `try audioEngine.start()` | `_ReportRPCTimeout` → `abort()` inside `AVAudioEngine.start()` | **No.** Not an error, so nothing throws and the `catch` never runs. |
+| `audioEngine.mainMixerNode` | same, from inside the accessor — merely *naming* the mixer initialises the IO unit | **No.** |
+| `audioEngine.prepare()` | `NSException` from `AVAudioEngineGraph::Initialize`, because the graph's chain ended at `timePitch` with no path to the output | **No.** An Objective-C exception. |
+
+`Punches3Tests` is a *hosted* bundle (`TEST_HOST` + `BUNDLE_LOADER`), so the app launches first, dies in `AudioManager.init`, and every test reports *"the test runner crashed before establishing connection"*. All three calls were eager work at launch that no longer needed to be eager: the engine is started by `play()`, the mixer is connected by `reconfigureGraphIfNeeded` on the first file that needs it, and both of those `prepare()` before starting. See [E20](#e20-the-audio-engine-touched-hardware-at-launch-and-could-abort-the-process).
 
 **Exploration notes.**
-- **Ruled out:** "the test files are somewhere the target does not point." They are in `Tests/`, present on disk, excluded by the `Tests` membership exception set, and the Sources phase has `files = ()`.
-- **Ruled out:** "Xcode finds them by convention." Synchronized groups still require explicit target membership; there is no discovery.
-- **To confirm:** an empty test bundle reports **zero tests**, which reads as "the suite passed." Do not treat a green run as evidence the tests ran. `Q3analysertests.swift` is the one with real numeric expectations and the one worth restoring first.
-- **Note:** [FrequencyAllignmenttest.swift](14-known-issues.md) is not a test — see [D7](#d7-frequencyallignmenttestswift-is-not-a-test). Restoring it as a target member adds a file that only prints.
+- **Ruled out:** "the test files are somewhere the target does not point." They are in `Tests/`, present on disk, and — as above — the group was not bound to the test target at all while being bound to the app target.
+- **Ruled out:** "Xcode finds them by convention." Synchronized groups still require explicit target membership; there is no discovery. Being listed in the app target's groups is membership, not mere visibility in the navigator.
+- **Ruled out:** "the tests pass, so the target is wired up." An empty test bundle reports **zero tests and still reads as a pass.** After adding the tests, `xcodebuild test` printed `** TEST SUCCEEDED **` while executing nothing — the same false green this entry describes, reached a second way. **Check that the log contains `Test case '…' passed`, not just that the exit status is zero.** All 18 unit cases plus both UI launch cases are confirmed present in the log.
+- **A green run is also not evidence the assertions are real,** so the suite was mutation-checked rather than trusted: making `previousRestartThreshold` unreachable and removing the `isLooping` wrap at the end of the queue fails 3 of the 19 (`testPreviousAfterThreeSecondsRestartsTheCurrentTrack`, `testEndOfQueueWrapsToFirstTrackWhenLooping`, `testSingleItemQueueLoopsOntoItself`). The two "step back" cases correctly stay green under that particular mutation — it only makes the threshold harder to reach — which is the right discrimination rather than a gap. Worth repeating after any change to the planner.
+- **Do not re-add `Tests` to the app target** to "fix" a test that fails to compile — that reproduces [A14](#a14-test-support-code-ships-inside-the-app-target) and puts the failure into the shipping binary. The exception-set approach is also not a safe place to add entries; the edit above was reverted by a build.
+- **Note:** `Punches3UITests` is untouched and still builds an empty bundle. It has to be skipped explicitly (`-skip-testing:Punches3UITests`) or it fails the run with *"couldn't be loaded"* independently of anything else.
 
 ### A3 App group entitlement is empty
 
@@ -457,23 +486,25 @@ If `masterPlaylistID` becomes unreadable for any reason — decode failure, part
 
 **High.**
 
-`PlaylistService.reorderPlaylistSongs` (`:91-101`) mutates `manager.playlists[index].audioFileIDs` but never rebuilds `manager.playbackQueue`, unlike its Songs-tab sibling `updatePlaylistOrder` (`:103-114`) which does. Drag-reordering inside a playlist therefore leaves the playing queue in the old order for the rest of the session.
+`PlaylistService.reorderPlaylistSongs` (`:91-101`) mutates `manager.playlists[index].audioFileIDs` but never rebuilt `manager.playbackQueue`, unlike its Songs-tab sibling `updatePlaylistOrder` (`:103-114`) which does. Drag-reordering inside a playlist therefore left the playing queue in the old order for the rest of the session.
 
-**Fix:** mirror `updatePlaylistOrder`'s queue rebuild.
+**Fixed.** The queue rebuild is now mirrored, guarded by `!manager.playingFromSongsTab` so a playlist reorder does not clobber the queue while the Songs tab is the source of truth. The `DispatchQueue.main.async` hop that this function also had is gone as well — see [C5](#c5-reorderplaylistsongs-captures-index-across-a-dispatch-hop), which was the same function and the same capture.
+
+**Still open, and the reason this was a one-site patch rather than a fix:** `playbackQueue` is written from five places — `AudioPlaybackService.play`, `AudioImportService`, `PlaylistService` (twice), `LibraryImportPipeline`, and `audio_manager` (twice) — and none of them is a source of truth. A queue rebuild in one place can be undone by a write in another, and the invariant "the queue is the visible list in the order the user sees" is maintained by convention rather than by construction.
 
 **Exploration notes.**
-- **Ruled out:** "`playbackQueue` is derived, so it cannot go stale." It is a stored array, assigned at `init`, on play when the context is empty, and on import. Reordering does not recompute it.
-- **Ruled out:** "reorder always updates the queue." `reorderSelectedSongs` updates it in exactly one of its two branches, and the `onMove` path for the Songs tab goes through a different function entirely.
-- **To confirm:** reorder two songs in the Songs tab, then press next. The queue follows the pre-reorder order.
-- **Note:** this compounds [C14](#c14-manual-sort-order-is-silently-discarded) — the manual order is not only discarded on read, it is never applied to the queue either. Fixing the ordering model first would make this easier to reason about.
+- **Ruled out:** "`playbackQueue` is derived, so it cannot go stale." It is a stored array, assigned at `init`, on play when the context is empty, and on import. Reordering did not recompute it.
+- **Ruled out:** "reorder always updates the queue." `reorderSelectedSongs` updated it in exactly one of its two branches, and the `onMove` path for the Songs tab goes through a different function entirely.
+- **Confirmed:** reorder two songs in the Songs tab, then press next. The queue followed the pre-reorder order. — Fixed; reordering now changes what plays next.
+- **Note:** this compounds [C14](#c14-manual-sort-order-is-silently-discarded) — the manual order is not only discarded on read, it was never applied to the queue either.
 
 ### C5 `reorderPlaylistSongs` captures `index` across a dispatch hop
 
 **High.**
 
-The same function hops to `DispatchQueue.main.async` (`:97`) before writing `self.manager.playlists[index] = updatedPlaylist`. The closure captures the integer `index` by value. Any playlist created, deleted or reordered in that window writes to the wrong row or resurrects a deleted playlist. The hop is unnecessary — the code is already on the main actor.
+The same function hopped to `DispatchQueue.main.async` (`:97`) before writing `self.manager.playlists[index] = updatedPlaylist`. The closure captured the integer `index` by value. Any playlist created, deleted or reordered in that window wrote to the wrong row or resurrected a deleted playlist. The hop was unnecessary — the code is already on the main actor.
 
-**Fix:** delete the `async`.
+**Fixed.** The `async` is deleted; the write and the queue rebuild are inline. This was done as part of the [C4](#c4-reordering-does-not-update-playbackqueue) fix because both defects are the same function and the same function now also rebuilds the queue — a deferred write would have deferred that too.
 
 **Exploration notes.**
 - **Ruled out:** "the index is recomputed inside the async block." It is captured by value at the call site and used later, so it refers to the list as it was *before* any concurrent mutation.
@@ -483,17 +514,22 @@ The same function hops to `DispatchQueue.main.async` (`:97`) before writing `sel
 
 ### C6 tempo, pitch and loop are not persisted
 
-**High.**
+**High — fixed.**
 
-`audio_manager.swift:14` (`tempo`), `:15` (`pitch`), `:18` (`isLooping`) are plain `@Published` vars with no `UserDefaults` writer. These are exactly the three states a user expects to survive a relaunch. Almost certainly unintentional — every other playback preference is saved.
+`audio_manager.swift` had `tempo`, `pitch` and `isLooping` as plain `@Published` vars with no `UserDefaults` writer. These are exactly the three states a user expects to survive a relaunch. Almost certainly unintentional — every other playback preference is saved.
 
-**Fix:** three keys, three `didSet` writers, three load lines.
+**Fixed.** Three keys (`playbackTempo`, `playbackPitch`, `playbackIsLooping`), three `didSet` writers, and a `loadTransportPreferences()` called from `init`.
+
+Two details worth keeping:
+
+- **The load clamps.** `setTempo`/`setPitch` clamp on the way in from the UI, and `loadTransportPreferences` clamps the same way — including rejecting a non-finite value. A stored float that has been corrupted, or written by a build with different bounds, would otherwise reach `AVAudioUnitTimePitch` unclamped. Writing the loaded value re-enters the `didSet` and writes the same value straight back, which is harmless but is why the clamp has to be in the load rather than only in the setter.
+- **`defaults` is a computed property** returning `UserDefaults.standard`, not a stored one, so it cannot be read before `init` completes. (An earlier attempt used `UserDefaults?` with `.map { defaults.set(...) }` in the observers, which does not compile — `defaults.set` needs the unwrapped value.)
 
 **Exploration notes.**
-- **Ruled out:** "they are persisted somewhere else, like the theme values." They are not. `ThemeManager` persists 30 comparable values, which is precisely the inconsistency — the pattern exists and was simply not applied here.
-- **Ruled out:** "the engine restores them." The engine reads the current in-memory values on `play`; nothing reads a stored value.
-- **To confirm:** change tempo, force-quit, relaunch. `tempo` is `1.0` again, and `isLooping` is `false`.
-- **Interaction:** [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue) is the other half of the loop story — the flag is read but mis-scoped, and not persisted. Fix both together or the control stays confusing.
+- **Ruled out:** "they are persisted somewhere else, like the theme values." They were not. `ThemeManager` persists 30 comparable values, which is precisely the inconsistency — the pattern existed and was simply not applied here.
+- **Ruled out:** "the engine restores them." The engine reads the current in-memory values on `play`; nothing read a stored value.
+- **Confirmed:** change tempo, force-quit, relaunch. `tempo` was `1.0` again, and `isLooping` was `false`. Both now survive.
+- **Interaction:** [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue) is the other half of the loop story — the flag was read but mis-scoped *and* not persisted, so the control read as broken for two independent reasons. Both are fixed in the same pass, which is what makes the control coherent.
 
 ### C7 Search shows an empty list with no empty state
 
@@ -885,39 +921,73 @@ Ordering scope is **albums only**. `moveCollection` renumbers just the page it w
 - **Trap:** `[albums].move(fromOffsets:toOffset:)` on the *store's* array would be wrong. `moveCollection` takes the page as a parameter precisely so a caller cannot reorder one page using another's indices.
 - **Verified with a harness:** 52/52 from a real v2 database — schema built by the app then stamped back to `user_version = 2`, since nothing in the app can produce one any more. Confirms the upgrade reaches v3, added exactly the two columns and dropped nothing, and that three further `migrate()` calls change nothing (`ALTER TABLE ADD COLUMN` is not idempotent). Also: arranging albums leaves every playlist position nil and the Playlists page intact, a newly created album lands *after* an arranged page, both pages reload with their own arrangements, and an album outside the page handed to `moveCollection` is never touched. The view itself is SwiftUI and cannot be exercised off-device, so the index hazard is argued from the service contract and asserted at the service boundary.
 
+### C21 Deleting the playing track silently rewound the queue to the first song
+
+**Medium — fixed.**
+
+`AudioLibraryService.deleteAudioFile(_:)` removed the current track from `audioFiles`, from every playlist, and from `playbackQueue`, and stopped playback:
+
+```swift
+// the pre-fix shape
+if currentlyPlayingID == audioFile.id { manager.stop() }
+audioFiles.removeAll { $0.id == audioFile.id }
+for index in playlists.indices { playlists[index].audioFileIDs.removeAll { $0 == audioFile.id } }
+playbackQueue.removeAll { $0.id == audioFile.id }
+```
+
+Both halves of that are individually correct and together leave nowhere to be. `stop()` clears `currentlyPlayingID` (and now `duration`, which used to keep the last track's length on screen with a dead transport), and the removal deletes the row that would have identified the position. The next tap of Play took `playbackQueue.first`, so deleting the fifth song of a twelve-song queue put the next thing you heard at song one — with the queue intact but no memory of where in it you were.
+
+**Fixed.** The successor is captured *before* the removal (afterwards the deleted track's index no longer exists, so "the track after this one" is not computable), re-checked against the surviving queue afterwards, and passed to a new `AudioPlaybackService.handover(to:)`. `handover` loads without playing and preserves the play/pause state you were in: deleting the playing song while paused leaves you on its successor, still paused, rather than starting audio you did not ask for.
+
+Two details that are deliberate rather than incidental:
+
+- **The successor is captured before, not after.** `queue.firstIndex(where:)` on the pre-removal queue, then `+ 1`. Computing it afterwards would silently produce the wrong element the moment the deleted track was last, and produce *nothing* the moment it was first — which is precisely the case where a user is most likely to be deleting it.
+- **`isLooping` is not consulted.** Loop decides what happens when a track *ends*. This one is being removed while you are looking at it, and wrapping to song one here would be indistinguishable from the bug being fixed. `handover` is deliberately not `play(_:)` with an extra argument; it is a separate entry point so the two policies cannot drift.
+
+**Exploration notes.**
+- **Ruled out:** "`stop()` is what rewinds it." `stop()` only clears state; it does not touch `playbackQueue`. The rewind came from the *combination* — no current track, so the next play fell back to `playbackQueue.first`.
+- **Ruled out:** "the successor should be the next song by title." `playbackQueue` is an ordered array and the successor is the next *element*, which is the ordering the user arranged. Sorting would make deletion non-deterministic in a different, harder-to-notice way.
+- **Note:** this is a symptom of [C4](#c4-reordering-does-not-update-playbackqueue)'s still-open half — `playbackQueue` has five writers and no source of truth, so every mutation site has to remember to maintain it by hand. This one now does. The others still do, by hand.
+
 ---
 
 ## D — Dead Code & Unfinished Features
 
 ### D1 Loop is honoured only at the end of the queue
 
-**High.**
+**High — fixed.**
 
-> **Correction to an earlier revision of this register:** this entry previously claimed *"`isLooping` has no reader anywhere in the codebase."* That was wrong. `isLooping` **is** read, at `Services/AudioPlaybackService.swift:190`. The control is not dead; it is mis-scoped, which is a smaller and more fixable problem than a dead one.
+> **Correction to an earlier revision of this register:** this entry previously claimed *"`isLooping` has no reader anywhere in the codebase."* That was wrong. `isLooping` **is** read, in the end-of-queue branch of the skip. The control is not dead; it is mis-scoped, which is a smaller and more fixable problem than a dead one.
 
-`View/audio_player_view.swift:217` toggles `audioManager.isLooping` and switches the icon between `repeat` and `repeat.1` (`:219`). The single read is the **end-of-queue** branch of `skipNextSong`:
+**What it was.** `View/audio_player_view.swift` toggled `audioManager.isLooping` and switched the icon between `repeat` and `repeat.1`. The single read was the end-of-queue branch:
 
 ```swift
-// `Services/AudioPlaybackService.swift:189-196`
+// the pre-fix shape of skipNextSong
 } else {
     if manager.isLooping {
-        if let firstFile = manager.playbackQueue.first { ... }
+        if let firstFile = manager.playbackQueue.first { /* play it */ }
     } else {
         stop()
     }
 }
 ```
 
-So the actual behaviour is: reaching the end of the queue wraps around to the first song if the flag is set. Nothing else consults it. The mid-queue advance (`:185-188`) never repeats, and neither of the two advance mechanisms in [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) reads the flag at all.
+So the behaviour was: reaching the end of the queue wraps to the first song if the flag is set, and nothing else consulted it. The mid-queue advance never repeated, and neither advance mechanism in [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) read the flag at all.
 
-The visible mismatch is the icon: `repeat.1` means *repeat this song*, but the code performs *repeat the whole queue*. A user who taps the button expecting the current track to loop gets a single pass through the queue instead, with no feedback that the two meanings differ.
+The visible mismatch was the icon: `repeat.1` means *repeat this song*, but the code performed *repeat the whole queue*. A user who tapped the button expecting the current track to loop got a single pass through the queue instead, with no feedback that the two meanings differ.
 
-**Fix:** decide which semantic is wanted. If repeat-one, check `isLooping` at the top of `skipNextSong` and re-play the current file. If repeat-all, the icon should be `repeat`, and the flag should also be persisted (see [C6](#c6-tempo-pitch-and-loop-are-not-persisted)).
+**Fixed — repeat-all, and the icon now says so.** The 3-state off/all/one cycle was considered and not taken: the flag has exactly one reader and one meaning, so the honest fix is to make the control describe what it does rather than to invent a mode the rest of the playback path does not implement.
+
+- **The icon is always `repeat`,** tinted with the accent colour when the flag is set. The `repeat.1` glyph is gone — it advertised repeat-one, which never existed. An accessibility label was added so the state is not carried by colour alone.
+- **The wrap is now a single named rule.** `PlaybackQueuePlanner` consults `isLooping` in exactly one place — the end of the queue — and a test asserts the two ends of the queue explicitly: `.stop` when off, `.playTrack(queue[0])` when on. Another asserts a one-item queue with repeat on spins that item, which is the case a single-flag implementation can silently regress.
+- **Loop does not affect Previous.** A test pins this: repeat means repeat *the queue*, not wrap backwards off the front.
+- **The flag is now persisted** — see [C6](#c6-tempo-pitch-and-loop-are-not-persisted). It previously reset on every launch, which made the toggle look broken independently of the semantics.
 
 **Exploration notes.**
-- **Ruled out:** "the toggle does not write." It does — `audioManager.isLooping.toggle()` at `audio_player_view.swift:217` sets the `@Published` property, and the icon at `:219-221` reflects it.
-- **Ruled out:** "a missing reader means the feature was never wired." The queue-wrap read exists; the feature is partially wired, which is why it appears broken only in the repeat-one case.
-- **To confirm:** with one song in the queue and the flag on, finishing it wraps to the same song — so a single-song queue cannot distinguish the two semantics. Use a three-song queue and press next on the last track.
+- **Ruled out:** "the toggle does not write." It does — `audioManager.isLooping.toggle()` sets the `@Published` property, and the icon reflected it.
+- **Ruled out:** "a missing reader means the feature was never wired." The queue-wrap read existed; the feature was partially wired, which is why it appeared broken only in the repeat-one case.
+- **Confirmed:** with one song in the queue and the flag on, finishing it wraps to the same song — so a single-song queue cannot distinguish the two semantics. A three-song queue is required to observe the difference, which is why the tests use three.
+- **Not decided here:** whether repeat-*one* should ever exist. It is a real feature and not a bug fix — it needs a separate flag, a third icon state, and a decision about whether an explicit Next overrides it. Nothing in the current code or this fix assumes one way or the other.
 
 ### D2 Tempo control is commented out
 
@@ -1247,6 +1317,7 @@ The three band filters are applied in `updateUIView` (`AudioMeters/goniometerVie
 
 The 60 Hz analysis `Timer` (`:286-291`), three shader clocks and SwiftUI layout all run on the main run loop. Defensible at 8192-point FFT, but there is no yielding.
 
+
 ### E14 An interruption leaves state that reads as "still playing"
 
 **Critical — partially fixed.**
@@ -1262,29 +1333,30 @@ The `.began` handler did three things (`Services/AudioSessionService.swift:101-1
 3. **Nothing restarts it.** For a phone call, `.ended` arrives **without** `.shouldResume` — the normal outcome — and that branch (`:107-119`) is gated entirely on the option, so it does nothing at all. The timer stays dead.
 4. **Returning to the app does not repair it.** The `willEnterForeground` handler (`:163-174`) re-activates the session but never restarts the engine or the timer.
 
-**Fixed: consequence 1, and only consequence 1.** `.began` now calls `updateNowPlayingInfo()`, which maps `isPlaying` to the rate and so publishes `0.0`. It deliberately *updates* the info rather than clearing it — clearing `nowPlayingInfo` would drop the entry from Control Center entirely, so an interrupted track would vanish instead of showing as paused.
+**Fixed, including the parts that were listed as still open.**
 
-The resume side needs no matching call, and that asymmetry is the evidence that this was a one-sided bug rather than a general one: `.ended` sets `isPlaying = true` and calls `startTimer()`, whose first tick calls `updateNowPlayingInfo()` itself (`AudioPlaybackService.swift:119-136` — `lastSecond` starts at `-1`, so the first fire always differs). **The stop side has no timer to do it for us, which is exactly why the call belongs there.** The route-change handler already had it; this path was the outlier. The timer teardown also now goes through `playbackService.stopTimer()` rather than repeating its two statements inline.
+Consequence 1 was already fixed — `.began` calls `updateNowPlayingInfo()`, which maps `isPlaying` to the rate and so publishes `0.0`. It deliberately *updates* the info rather than clearing it, because clearing `nowPlayingInfo` would drop the entry from Control Center entirely, so an interrupted track would vanish instead of showing as paused.
 
-**Still open.** Consequence 1 is the reported symptom and the only part of it that the user could see from outside the app, but consequences 2–4 are untouched, and they are what leaves the player frozen:
+The remaining three consequences are now addressed too:
 
-- Recovery still requires a user action. `startTimer()` is reached from exactly three places — `load` (`AudioPlaybackService.swift:59`), `togglePlayPause` (`:88`), and `skipNextSong` (`:172`, only when `timer == nil`) — and **every one of them is user-initiated**. No automatic path restarts it: not the `.ended` branch, not `willEnterForeground`.
-- `currentlyPlayingID` still survives, on purpose. Clearing it was considered and rejected: it is the only record of *what* to resume, and `.ended` carries no other hint. Keeping it costs a mini-player showing the right track at the right frozen position, which is the correct thing to show; the cost is that it must be kept in step.
-- `stop()` (`AudioPlaybackService.swift:63-75`) still does not clear `MPNowPlayingInfoCenter`, so the identical published-state gap appears whenever the queue ends and `:195` calls `stop()`.
-- Two structural problems sit underneath, both untouched:
-  - **`manager.isPlaying` and `AVAudioPlayerNode.isPlaying` are two unreconciled sources of truth for one fact.** `togglePlayPause` *branches* on the engine's (`:80`) but *writes* the manager's (`:82`, `:87`). Any path that moves one without the other leaves them disagreeing, and the UI reads the manager's. **The fix above makes this worse in one narrow way**: the published rate now depends on the manager's flag being right, which is the one the engine's branch can contradict. That was already true for the rate written by the timer; the `.began` path just made it visible on the interrupt route.
-  - **`pause()` is the only engine mutation not serialised.** `load`, `play`, `stop`, and `seek` all dispatch onto `audioQueue` (`AudioEngines/AppleAudioEngine.swift:260`, `:283`, `:317`, `:329`), but `pause()` calls `playerNode.pause()` directly on whatever thread the notification arrived on (`:312-314`) — so it races in-flight scheduling work on the queue.
+- **`.ended` no longer requires `.shouldResume` to do anything.** The handler re-activates the session unconditionally — without the option, which is the *normal* outcome of a phone call, the session was previously left deactivated. It then branches on the option: with `.shouldResume` **and** `manager.isPlaying`, it resumes; otherwise it restarts the progress tick and republishes the now-playing info, leaving a clean paused-but-resumable state. `currentlyPlayingID` is still deliberately kept, because it is the only record of *what* to resume and `.ended` carries no other hint. What changed is that the tick no longer stays dead, so the mini-player shows a live position rather than a frozen one.
+- **`stop()` clears `MPNowPlayingInfoCenter`.** A new `AudioSessionService.clearNowPlayingInfo()` does it, and also disables the remote commands. `updateNowPlayingInfo()` cannot express this — it returns early when nothing is loaded, and publishing a stale track with a rate of `0.0` would leave Control Center showing a song the app is no longer playing.
+- **`willEnterForeground` now repairs rather than only reactivating.** It activates the session, restarts the `AVAudioEngine` if it is not running (the `prepare`/`start` pair, with the error logged rather than swallowed), and then either resumes or restarts the tick. Returning to the app no longer waits for the user to tap something.
 
-**Fix, for what remains:** handle the `!shouldResume` case by presenting a paused-but-resumable state rather than silently stalling, and clear `MPNowPlayingInfoCenter.default().nowPlayingInfo` in `stop()`. Then reconcile the two `isPlaying` flags on one side of the boundary, and make `AppleAudioEngine.pause()` go through `audioQueue` like every sibling.
+Both structural problems underneath are fixed:
+
+- **`manager.isPlaying` and `AVAudioPlayerNode.isPlaying` are reconciled.** `togglePlayPause` now *branches* on the engine's flag and drives `resumePlayback()` / `pausePlayback()` from there, so there is one decision point reading the authoritative source rather than a read of one and a write of the other. The remote `play`/`pause` commands call `resumePlayback()` / `pausePlayback()` directly and never invert, which was the specific case this entry said the earlier fix made worse.
+- **`pause()` is serialised.** `AppleAudioEngine.pause()` now dispatches onto `audioQueue` like every sibling, instead of calling `playerNode.pause()` on whatever thread the notification arrived on.
 
 **Exploration notes.**
-- **Ruled out:** "the `.began` branch is missing." It exists and does set `isPlaying = false` — which is why the bug is confusing to chase. The stale state is in the *published* now-playing info, not the flag.
-- **Ruled out:** "`AVAudioPlayerDelegate` cleans up the leftover state." `AudioManager` conforms at `audio_manager.swift:459` and implements `audioPlayerDidFinishPlaying` (`:460-466`), but **nothing in the codebase is an `AVAudioPlayer`** — the engine is `AVAudioEngine` + `AVAudioPlayerNode`. That delegate method is dead and can never repair this.
-- **Ruled out:** "the route-change handler is responsible." `.oldDeviceUnavailable` (`AudioSessionService.swift:125-146`) *does* call `updateNowPlayingInfo()` and correctly declines to auto-resume. A phone call is an interruption, not a route change.
+- **Ruled out:** "the `.began` branch is missing." It exists and does set `isPlaying = false` — which is why the bug is confusing to chase. The stale state was in the *published* now-playing info, not the flag.
+- **Ruled out:** "`AVAudioPlayerDelegate` cleans up the leftover state." `AudioManager` conformed at `audio_manager.swift:459` and implemented `audioPlayerDidFinishPlaying`, but **nothing in the codebase is an `AVAudioPlayer`** — the engine is `AVAudioEngine` + `AVAudioPlayerNode`. That delegate method was dead and could never repair this. **The conformance has now been deleted** (see [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song)), so this trap is gone from the file rather than merely documented.
+- **Ruled out:** "the route-change handler is responsible." `.oldDeviceUnavailable` *does* call `updateNowPlayingInfo()` and correctly declines to auto-resume. A phone call is an interruption, not a route change.
 - **Verified with a harness:** 23/23, compiled from a byte-identical copy of `updateNowPlayingInfo()`. A playing track publishes `1.0`; flipping `isPlaying` alone leaves `1.0`; `updateNowPlayingInfo()` publishes `0.0` with elapsed time preserved and the entry intact. Run against the pre-fix source it fails 4 of the 23, so it is a regression guard rather than a tautology. It separately asserts `nowPlayingInfo` is assigned in exactly one place — a second writer would change the premise of the whole fix.
-- **Not provable off-device:** that a real `AVAudioSession.interruptionNotification` reaches that method. That link is asserted on the source text instead, which is weaker than executing it and weaker still than extracting the branch into a pure `interruptionResponse(type:options:)`. Offered as the caller's decision rather than taken unilaterally — the harness is worth more with that refactor than without it, and it is not worth the churn on its own.
-- **To confirm on device:** log the interruption `type` and `options` raw values, plus `MPNowPlayingInfoCenter.default().nowPlayingInfo?["MPNowPlayingInfoPropertyPlaybackRate"]` immediately before and after a call. Expect `.ended` with an empty options set, and a rate now at `0.0` rather than `1.0` — the remaining defect is the frozen in-app player, not the published state.
-- **Checked, and worth stating explicitly so nobody re-checks it:** this is **not** the same trigger as [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block). A throw in `setupAudioSession` (`audio_manager.swift:95`) cannot suppress the interruption observer — `setupInterruptionObserver()` is called independently on the next line (`:90`), outside the `do`. So a failed session setup makes remote commands inert while interruptions are still handled normally. The two reports are separate bugs; do not merge their investigations. **They still compose**: when E16 fires the user has no remote way to recover from E14 either, which is why the two rows in *Reported symptoms* are listed against the same report.
+- **That harness has now been obsoleted by a structural change.** `updateNowPlayingInfo()` now also drives `nextTrackCommand.isEnabled` / `previousTrackCommand.isEnabled` from the queue position, so the byte-identical-copy premise no longer holds. The assertions it made about the rate and elapsed time are unaffected and worth reimplementing against the real method if this area is touched again.
+- **Not provable off-device:** that a real `AVAudioSession.interruptionNotification` reaches that method. That link is asserted on the source text instead, which is weaker than executing it and weaker still than extracting the branch into a pure `interruptionResponse(type:options:)`. Offered as the caller's decision rather than taken unilaterally — the harness was worth more with that refactor than without it, and it was not worth the churn on its own. It is *more* worth it now that the `.ended` branch has real branching in it.
+- **To confirm on device:** log the interruption `type` and `options` raw values, plus `MPNowPlayingInfoCenter.default().nowPlayingInfo?["MPNowPlayingInfoPropertyPlaybackRate"]` immediately before and after a call. Expect `.ended` with an empty options set, a rate at `0.0` rather than `1.0`, and — new — the mini-player position *moving again* after the call ends, with the track still loaded.
+
 
 ### E15 Two racing mechanisms advance the queue, and a stale completion can skip a just-started song
 
@@ -1310,14 +1382,32 @@ Two further problems with mechanism 2:
 
 `isLooping` is consulted by neither mechanism mid-queue — see the corrected [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue).
 
-**Fix:** keep exactly one advance mechanism. Firing from the last rendered buffer is the correct signal, so delete the `currentTime >= duration` branch and drive the queue from `onPlaybackFinished` alone. Clear `onPlaybackFinished` in `AppleAudioEngine.stop()` and `load()`, and re-check `isUserStopped` on the main queue immediately before invoking it. Read `duration` from the same clock the comparison uses.
+**Fixed.** One mechanism, one duration clock, one tick, and a generation token that makes stale callbacks inert.
+
+| # | Mechanism | Where | Now |
+|---|---|---|---|
+| 1 | `engine.onPlaybackFinished`, fired from the last buffer's completion callback | `AudioEngines/AppleAudioEngine.swift` → `AudioPlaybackService.advance(.trackFinished)` | **The only mechanism.** |
+| 2 | the 0.2 s timer checks `currentTime >= duration && duration > 0` | was `AudioPlaybackService.swift:134-136` | **Deleted.** |
+
+What changed — and one place where this entry's own recommendation turned out to be wrong:
+
+- **The timer's end-of-track branch is gone.** `tick()` now only publishes position. Deciding a track has ended is the engine's job: it is the only party that knows when the last *rendered* buffer has been rendered.
+- **`onPlaybackFinished` is deliberately *not* cleared in `stop()` or `load()`**, despite that being what this entry originally prescribed. `AudioPlaybackService` reassigns the closure from the main thread immediately after calling `load()`, while the engine's own `stop()` and `load()` bodies are still sitting unstarted on `audioQueue` — so clearing it there races the reassignment and can wipe the closure the *new* track needs. Staleness is handled by the generation token instead, which is checked on `audioQueue` where it cannot race. Clearing the closure was never the mechanism anyway: the damage was to the *scheduling counter*, which a cleared closure does not touch.
+- **`playbackRun` is a monotonic token (`PlaybackRun`), bumped by `load`, `stop` and `seek`.** Every buffer captures the token of the run that scheduled it and discards itself inside `audioQueue` if the engine has moved on. This is the actual fix for the skip-a-just-started-song window, and it covers `seek()` as well — see [E18](#e18-seeking-near-the-end-of-a-track-advanced-the-queue).
+- **The tick is a `DispatchSourceTimer`,** not `Timer.scheduledTimer`. See [E19](#e19-the-progress-timer-is-a-run-loop-timer-so-it-stops-when-it-matters).
+- **One duration clock.** `manager.duration` is now published from `engine.duration` by the first tick after a load, rather than taken from `AudioFile.audioDuration` at import time. The render clock and the duration it is compared against can no longer disagree.
+- **One advance entry point.** `advance(_ reason:)` serves the automatic path, the in-app buttons and the remote commands alike, with an in-flight guard. The decision half is pure — `PlaybackQueuePlanner.action(...)` — so the queue rules are unit-tested. See [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue).
+- **The duplicate `onPlaybackFinished` assignment in `AudioEngineService.changeAlgorithm` is deleted.** It called `skipNextSong` directly, bypassing the advance guard, so it could double-advance against the closure `play()` installs.
 
 **Exploration notes.**
-- **Ruled out:** "there is no auto-advance at all." It is wired twice; the problem is duplication, not absence.
-- **Ruled out:** "`AVAudioPlayerDelegate` is the real completion path." `audio_manager.swift:271-278` looks like one but can never fire — no `AVAudioPlayer` exists in the project. Anyone reading `audio_manager.swift` alone will draw the wrong conclusion here.
-- **Ruled out:** "the double-advance is the common cause." `stopTimer()` at `:179` normally cancels mechanism 2 in time, which is why ordinary playback behaves. The reported unreliability is more consistent with the narrow stale-callback window and the background timer throttling.
-- **To confirm:** put a `print` of the `currentlyPlayingID` at entry to `skipNextSong` with a monotonic timestamp, plus the originating mechanism. A double entry within a few milliseconds of a track end is the signature. The most reliable reproduction is pressing Next exactly as a track ends.
-- **Also check:** whether the track cuts out early — that is mechanism 2 comparing the render clock against the metadata duration, and it is a separate symptom of the same duplication.
+- **Ruled out:** "there is no auto-advance at all." It was wired twice; the problem was duplication, not absence.
+- **Ruled out:** "`AVAudioPlayerDelegate` is the real completion path." `audio_manager.swift` carried an `AVAudioPlayerDelegate` conformance that looked like one but could never fire — no `AVAudioPlayer` exists in the project. **That conformance has now been deleted** along with `audioPlayerDidFinishPlaying`, so the conclusion does not have to be re-derived by reading the file again. Anyone reading `audio_manager.swift` alone previously drew the wrong answer here.
+- **Ruled out:** "the double-advance is the common cause." `stopTimer()` normally cancelled mechanism 2 in time, which is why ordinary playback mostly behaved. The reported unreliability is better explained by the narrow stale-callback window, by background timer throttling, and by [E18](#e18-seeking-near-the-end-of-a-track-advanced-the-queue).
+- **Corrected by this fix:** the original diagnosis blamed a guard "checked on the wrong queue". The guard was on the right queue. The real problem was that it could not detect that the *track it belonged to* was no longer the current one — `isUserStopped` is a per-engine boolean that the next `load` resets, so it had no way to say that. A generation token can.
+- **Covered by tests** — `Tests/PlaybackContinuationTests.swift`. The end-of-track path and the Next button are asserted to produce the *same* action at every queue position; that identity is the whole point of the fix and the thing a regression would most likely break silently. Stale-token invalidation is covered too, as is the "reading the token must not advance it" invariant — the latter caught a real bug during implementation, where `scheduleBuffersIfNeeded` bumped the token on each pass and so invalidated the buffers the previous pass had just scheduled, producing silence after the first few buffers.
+- **Not covered by tests:** the `seek()`-flush behaviour and the locked/background case both need a live audio device. See *To confirm* below.
+- **To confirm on device:** print `currentlyPlayingID` at entry to `advance(_:)` with a monotonic timestamp. Two entries within a few milliseconds of a track end is the signature of the old double-advance. The most reliable reproduction of the stale-callback window was pressing Next exactly as a track ends.
+
 
 ### E16 Remote commands are registered inside the session-setup `do` block
 
@@ -1350,14 +1440,26 @@ Three further defects in the same handlers, which apply even when registration s
 - **Next and previous always report success.** `nextTrackCommand` (`:48-52`) and `previousTrackCommand` (`:41-45`) return `.success` unconditionally, even when `skipNextSong`/`skipPreviousSong` did nothing because the queue was empty or the track was not in it. The system is told the command worked.
 - **Scrub works while stopped.** `changePlaybackPositionCommand` (`:59-67`) calls `seek` without checking that anything is playing, so the scrubber moves with no audio.
 
-**Fix:** move `beginReceivingRemoteControlEvents()` and `setupRemoteTransportControls()` out of the `do` block so registration is unconditional, and log session failures with `os.Logger` instead of `print`. Give the play command a real play/pause distinction, and return `.commandFailed` when a skip is a no-op.
+**Fixed.** `beginReceivingRemoteControlEvents()` and `setupRemoteTransportControls()` moved out of the `do` block, so registration is unconditional; the throwing calls now log via `os.Logger` instead of `print`; and the three handler defects are addressed:
+
+- **`play` and `pause` are distinct commands.** `playCommand` calls `resumePlayback()` and `pauseCommand` calls `pausePlayback()` — neither inverts state. `togglePlayPauseCommand` is registered separately for the case where the system genuinely means "toggle". This is the inversion described below, and it was the easiest of the four defects to confirm on its own.
+- **Skips report honestly.** `nextTrackCommand` and `previousTrackCommand` return the result of `playbackService.advance(_:)`, so a skip with nowhere to go is `.commandFailed` rather than a claimed success.
+- **Scrubbing while stopped is refused.** `changePlaybackPositionCommand` returns `.commandFailed` when `currentlyPlayingID` is `nil`, so the scrubber no longer moves with no audio behind it.
+- **Command availability tracks the queue.** `updateNowPlayingInfo()` sets `nextTrackCommand.isEnabled` from the current queue position (and `isLooping`), so Next greys out at the end of the queue instead of silently doing nothing, and `previousTrackCommand.isEnabled` is false when there is no previous track. `stop()` calls a new `clearNowPlayingInfo()` which disables everything, because `updateNowPlayingInfo()` returns early when nothing is loaded and so cannot express "no transport available".
+
+Two further items from the same subsystem, added while fixing it:
+
+- **`policy: .longFormAudio`** is now set on the category. `.playback` + `.default` says what the app does with audio but not that this is music, and the policy is what gets correct Now Playing behaviour and AirPlay 2 queueing.
+- **`MPNowPlayingInfoPropertyDefaultPlaybackRate`** is published alongside `MPNowPlayingInfoPropertyPlaybackRate`. The system interpolates the lock-screen scrubber between updates from this key; without it the elapsed time visibly steps a second at a time.
+- **`setupRemoteTransportControls` is idempotent** via an `isRemoteControlConfigured` flag, so a second call cannot register duplicate targets — which is a documented way to leak handlers and to have two closures race on the same command.
 
 **Exploration notes.**
-- **Ruled out:** "the background mode is missing." `Punches3-Info.plist:4-6` declares `UIBackgroundModes: ["audio"]` and `.playback` is set at `AudioSessionService.swift:19` — a background-audio app keeps running.
+- **Ruled out:** "the background mode is missing." `Punches3-Info.plist:4-6` declares `UIBackgroundModes: ["audio"]` and `.playback` is set at launch — a background-audio app keeps running.
 - **Ruled out:** "iOS suspends the app so the commands do not arrive." With an active `.playback` session the process is not suspended; the command does arrive, there is simply no handler.
 - **Ruled out:** "the handler is registered but the queue is empty." That would be a different symptom, and the same report would appear on **every** skip rather than *sometimes*.
-- **Checked, and worth stating explicitly so nobody re-checks it:** the interruption observer does **not** share this failure path. `setupInterruptionObserver()` is a separate call at `audio_manager.swift:98`, outside the `do`, so a thrown `setActive` skips remote-command registration but leaves interruptions handled normally. [E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing) therefore has an independent trigger — do not merge the two investigations.
-- **To confirm:** log a line on entry to `setupRemoteTransportControls`, and log the session error with its domain and code. If the line is missing on the affected launches, the `try` threw. Then verify the `playCommand` inversion independently — it should reproduce 100% of the time and is the easier of the two to confirm.
+- **Checked, and worth stating explicitly so nobody re-checks it:** the interruption observer does **not** share this failure path — `setupInterruptionObserver()` was always a separate call outside the `do`. A thrown `setActive` skipped remote-command registration but left interruptions handled normally, so [E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing) had an independent trigger. Do not merge the two investigations. **They still compose**: when this entry's trigger fired the user had no remote way to recover from E14 either, which is why the two rows in *Reported symptoms* are listed against the same report. E14 is now fixed as well, so the composition no longer has anything to act on.
+- **Still worth confirming on device:** that the lock screen, Control Center and headphone buttons now work from a cold launch where `setActive` fails — which is the environmental case this entry was written about and the one a Simulator cannot reproduce. If the buttons are still inert on some launch, the throw is no longer the cause and the remaining suspect is the route-change handler deactivating the session without re-registering (it does not, and should not need to).
+
 
 ### E17 Every track whose rate differs from the audio session was played slow or fast *and* detuned by the same ratio
 
@@ -1370,9 +1472,10 @@ The cause was **two independent rate-pinning mechanisms, not one**, and fixing o
 **1 — `format: nil` pinned the player node.** `setupAudioEngine` built the graph in `init()`, **before any file existed**:
 
 ```swift
-// AudioEngines/AppleAudioEngine.swift:79-80, still how the graph is seeded
+// AudioEngines/AppleAudioEngine.swift — the player edge, still how the graph is
+// seeded. The mixer edge has since moved into reconfigureGraphIfNeeded; see
+// [E20](#e20-the-audio-engine-touched-hardware-at-launch-and-could-abort-the-process).
 audioEngine.connect(playerNode, to: timePitch, format: nil)
-audioEngine.connect(timePitch, to: audioEngine.mainMixerNode, format: nil)
 ```
 
 `format: nil` resolves the player node's output format from the audio session's rate, and **that format is fixed for the life of the node**. Buffers, meanwhile, were built in the file's own `processingFormat` (`:195`), and `AVAudioPlayerNode` inserts **no** sample-rate converter. So any file whose rate differed from the session rate had its frames consumed at the node's rate instead.
@@ -1412,7 +1515,7 @@ The second and third rows are the fixed state; only the connected format differs
 **Also fixed here:** `duration` (`:46`) divided `file.length` by `fileFormat.sampleRate`, but `file.length` counts frames in the **processing** format — `seek` (`:328`) already used `processingFormat` correctly. These agree for WAV and diverge whenever the decoder up-samples, HE-AAC being the common case (encodes at 22.05/24 kHz, decodes to 44.1/48 kHz), which reports roughly double the real duration. That is a second, independent clock disagreeing with the first; see also the two-clocks problem in [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song).
 
 **Exploration notes.**
-- **Ruled out:** "the tempo or pitch setting is wrong." `AudioManager.tempo` and `.pitch` both default to nominal and are not persisted ([C6](#c6-tempo-pitch-and-loop-are-not-persisted)); both were verified at `1.0`/`0.0` in the harness. "Slower *and* pitched down together" is only ever a resampling ratio — no pitch control produces both at once, and pitch alone would preserve duration.
+- **Ruled out:** "the tempo or pitch setting is wrong." `AudioManager.tempo` and `.pitch` both default to nominal; both were verified at `1.0`/`0.0` in the harness. (They were also not persisted — [C6](#c6-tempo-pitch-and-loop-are-not-persisted), now fixed, which was a second reason a user's settings would not survive.) "Slower *and* pitched down together" is only ever a resampling ratio — no pitch control produces both at once, and pitch alone would preserve duration.
 - **Ruled out:** "the import mangled the files." Import only ever *reads* `processingFormat.sampleRate` to compute a duration (`Services/LibraryImportPipeline.swift:693`) and stores it. Nothing rewrites or resamples audio; `AudioImportService` only ever `copyItem`/`moveItem`s. The reported symptom is a playback fault, and the corrupt-rate path has exactly one location: the node connections.
 - **Ruled out:** "the pitch algorithm picker chose a bad engine." Only `.apple` is implemented and it is the default (`Services/AudioEngineService.swift:11-19`); the other cases set `currentEngine = nil`, which stops playback entirely rather than detuning it.
 - **Ruled out — and this one was wrong the first time.** An earlier draft of this entry concluded "the time-pitch unit is innocent" and that it "could not be removed to test this, because `AVAudioUnitTimePitch` cannot render in manual-rendering mode (`-10874`), so the harness measures the player → mixer edge". That reasoning measured a path **the app does not use**: dropping the unit removed the very node that was holding the wrong rate, so the harness proved the *absence* of the bug rather than its absence from the graph. The only check that discriminates is a format assertion against the real class, which is what finally located the second pinning mechanism.
@@ -1422,7 +1525,105 @@ The second and third rows are the fixed state; only the connected format differs
 - **To confirm on device:** play a 44.1 kHz CD rip and a 48 kHz master on the same route. Both should now be in tune; before the fix the first was clean and the second sat about a semitone and a half flat.
 - **Still open, and now better isolated by this fix:** [E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing) and [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block) both concern the session and the published state, and neither was involved here. E17 was audible in normal playback, which is what finally made it a bug report rather than a mystery.
 
----
+
+### E18 Seeking near the end of a track advanced the queue
+
+**High — fixed.**
+
+Found while tracing [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song)'s stale-callback problem, and it was not in the register before that. The register documented the same mechanism for the `stop()` path; it had not been traced through `seek()`.
+
+`AppleAudioEngine.seek(to:)` calls `playerNode.stop()`, which **flushes every pending buffer rather than playing it** — up to `buffersAhead` (5) of them. The system still invokes the completion handler for each flushed buffer; that is documented behaviour, not a bug. Those handlers run on `audioQueue` *behind* `seek`'s own work, so they arrive after `seek` has reset `scheduledBuffersCount` for the new position. Each decremented the count a second time.
+
+The consequence: if the flushed run's last buffer had `atEnd == true` — which it does whenever the seek happens while the end of the file is still in the lookahead — then `atEnd && scheduledBuffersCount == 0` went true on the **rescheduled** run, setting `isFileFinished` and firing `onPlaybackFinished`. Scrubbing near the end of a track skipped it, sometimes skipping the track that had just started as well.
+
+`stop()` had the same exposure, which is why [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) already described the shape of the bug. The register's proposed fix — clearing `onPlaybackFinished` — would not have covered either, because the damage is to `scheduledBuffersCount`, and a cleared closure does not restore a corrupted count. The count would still reach zero early, and the track would still be skipped by whichever mechanism observed it.
+
+**Fixed** by `PlaybackRun`, the same monotonic token: `seek()` bumps it, so every flushed buffer's callback is discarded on `audioQueue` before it can touch the counter. All three mutators of scheduling state — `load`, `stop`, `seek` — bump it.
+
+**Exploration notes.**
+- **Ruled out:** "the completion is simply not called for flushed buffers." It is. This is the whole of the defect.
+- **Ruled out:** "`onPlaybackFinished = nil` is sufficient." It leaves `scheduledBuffersCount` decremented by buffers that never played, and `isFileFinished` reachable on a track that has barely started.
+- **Not covered by tests.** A test would need a real `AVAudioPlayerNode` to produce genuine flushed completions, which is why the token contract is unit-tested instead and the flush behaviour is not. **To confirm on device:** load a long track, seek to within a second or two of the end, and check that playback continues from the new position rather than advancing.
+
+
+### E19 The progress timer is a run-loop `Timer`, so it stops when it matters
+
+**High — fixed.**
+
+`AudioPlaybackService.startTimer()` created the progress tick with `Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true:)`. That constructor adds to the run loop in **`.default` mode**, and `.default`-mode timers are suppressed for the duration of any mode change — which includes every scroll and every scrubber drag — and throttled by the system once the app is backgrounded.
+
+That is bad for a progress bar and much worse for auto-advance, because this timer was one of the two mechanisms deciding when a track had ended (see [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song)). The user-reported *"auto next song needs some work"* and *"songs sometimes don't skip when out of the app"* are both explained by this: **the tick is at its least reliable in exactly the two states where the position and the lock-screen elapsed time most need it.**
+
+**Fixed** by using a `DispatchSourceTimer`, which is not attached to the run loop at all and so is unaffected by run-loop mode or by app backgrounding. It is created on `.main` with a 50 ms `leeway`, so the system can coalesce ticks when the main thread is busy — the difference between a dropped frame and a dropped tick.
+
+`AudioManager.timer` changed type from `Timer?` to `DispatchSourceTimer?` to match, and `deinit` now calls `cancel()` rather than `invalidate()`. Both types are confined to `AudioPlaybackService` and `AudioManager`.
+
+**Exploration notes.**
+- **Ruled out:** "the timer is invalidated on background." It is not — the app is a background-audio app and keeps running. The timer throttling is the system's, not the app's.
+- **Ruled out:** "adding it in `.common` mode would be equivalent." It would help while the app is foregrounded and would still be throttled in the background, and it would require touching every mode change to stay correct. A dispatch source has no run-loop mode to keep in sync. This was the smaller-diff alternative and was considered before choosing the source.
+- **Also removed, and the reason a `Bool` is the wrong type here:** `AudioManager.isSeeking` latched. `seek()` set it `true` and cleared it from a `DispatchQueue.main.asyncAfter(+0.15)`; if the app were suspended in that window, the block never ran and `startTimer()`'s `guard !manager.isSeeking` returned early **forever**, muting progress and the lock-screen position for the rest of the session with no way to recover. It is now `seekSuppressedUntil`, a monotonic `CACurrentMediaTime` deadline compared against the clock — self-healing, because an elapsed deadline needs no callback to restore it. **Deliberately not unit-tested:** a test could only re-assert that a past deadline is in the past, which cannot fail.
+
+
+### E20 The audio engine touched hardware at launch and could abort the process
+
+**Critical — fixed.**
+
+Not in the register until the unit tests had to be made runnable ([A2](#a2-both-test-targets-are-empty)); found by making the hosted test bundle work and reading the crash report. It is a launch-time process death, so it belongs in the register regardless of how it was found.
+
+`AudioEngineService.initialiseEngine()` runs from `AudioManager.init()`, and `AppleAudioEngine.init()` did three eager things. **In an environment where the audio hardware does not answer, each of them kills the process outright** — and none of them is catchable, so the surrounding `do`/`catch` blocks and `print` statements were no protection at all:
+
+| Call | How it fails | Catchable? |
+|---|---|---|
+| `try audioEngine.start()` | `_ReportRPCTimeout` → `abort()` from *inside* `AVAudioEngine.start()`. No error is produced, so nothing throws and the `catch` never runs. | **No** |
+| `audioEngine.mainMixerNode` | the same, from inside the accessor. Merely *naming* the mixer initialises the IO unit — the `connect` to it was the trigger, not a `start`. | **No** |
+| `audioEngine.prepare()` | `NSException` from `AVAudioEngineGraph::Initialize`, because the graph's chain ended at `timePitch` with no path to the output. An Objective-C exception. | **No** |
+
+So the app could die during `init`, before any playback code ran, before the session was configured, and before anything could be shown or logged. Confirmed in practice: `Punches3Tests` is a hosted bundle, so every one of the 19 test cases reported *"the test runner crashed before establishing connection"* until this was fixed. Each of the three crashes was found separately and in that order — the stack moved from `AURemoteIO::Start` to `AURemoteIO::Cleanup` to `AVAudioEngineGraph::Initialize` as each eager call was removed.
+
+**Fixed** by doing none of the three eagerly. `setupAudioEngine()` now only attaches the two nodes and connects `playerNode → timePitch`; the output edge is made by `reconfigureGraphIfNeeded` on the first file that needs it, and `prepare()` is called there and in `play()`. The engine is started by `play()`. An app that is launched and never played now touches no audio hardware at all.
+
+The `isOutputConnected` flag is load-bearing and easy to get wrong. `reconfigureGraphIfNeeded` normally returns early when the format already matches, and on a fresh engine the placeholder `playerNode → timePitch` connection adopts the session's rate — so **any file already at that rate would skip the reconfigure and leave the graph with no path to the speakers at all.** The guard is now `!alreadyCorrect || !isOutputConnected`, and a regression here is silent: no error, no log, just no sound for files matching the session rate.
+
+**Exploration notes.**
+- **Ruled out:** "the `do`/`catch` should have handled it." Neither failure is a Swift error. The `catch` clauses were unreachable for the failures that actually occur.
+- **Ruled out:** "this is a Simulator-only artifact." The trigger is the audio hardware not answering in time, which is environmental rather than a Simulator fiction — it is what happens on a locked device waking, on a route change, or when another app holds the session. The hosted test bundle is simply a reliable way to be in that state.
+- **Interaction with the analyser:** `UnifiedAudioAnalyser.installTapSafely` guards on `audioEngine.isRunning`, and the tap was previously installed off a single fixed 150 ms delay that assumed the engine was up by then. With the start now deferred to `play()`, that assumption is weaker, so the install **polls** to the condition instead, retrying every 50 ms up to 30 times with `isCurrent` cancelling on every attempt. A fixed delay was only ever a guess at how long the start takes; losing the race left the visualiser dead for the whole track, silently, because the next song's attach was the only thing that would retry.
+- **To confirm on device:** the first track should sound. This is the one change in the playback work that a mistake in would be completely silent, so it is worth playing something rather than trusting the build.
+
+
+### E21 `play()` returned early on a failed session activation, after stopping the timer
+
+**Critical — fixed.**
+
+The single most likely explanation for *"not effective when the device is closed"*, and it was not in the register when this work started. Found by tracing `AudioPlaybackService.play()` line by line.
+
+`skipNextSong()` called `stopTimer()` and *then* called `play()`. `play()` began with:
+
+```swift
+do {
+    try AVAudioSession.sharedInstance().setActive(true)
+} catch {
+    print("…")
+    return            // ← returns into silence
+}
+```
+
+So when activation failed, the method returned **after** the timer had already been cancelled and the engine stopped, with no track playing, no timer running, and nothing on screen to explain it. The user pressed Next, or a track ended, and the app went silent and inert.
+
+`setActive` fails routinely while the system is mid-transition — the device locking, an interruption being torn down, another app holding the session. The two most interesting states for an auto-advance bug are exactly the states in which it is most likely to throw, which is why this presented as "it works until the phone locks".
+
+**Fixed** in three parts:
+
+- **`activateSession()` returns `Bool` and logs via `os.Logger`.** Nothing is returned into. A `print` is not in a release build's device log without a sysdiagnose capture, so the original failure was effectively unobservable.
+- **A failed activation no longer tears anything down.** The current state stays intact and `scheduleSessionRetry` re-enters `play()` with the same arguments after 0.5 s, bounded at 2 retries so it cannot spin the main queue in the background. `sessionRetryCount` resets on success.
+- **The session is configured once, at launch.** `play()` now only activates; it no longer re-runs `setCategory` on every play, which was both redundant and another way to throw at a bad moment.
+
+**Exploration notes.**
+- **Ruled out:** "the throw is rare enough not to matter." It is not rare in the states that matter. `setActive` at launch with no file loaded and no engine running is the case [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block) already documented as likely to fail.
+- **Ruled out:** "the timer would restart itself." There is no automatic path to `startTimer()` from the `.ended` interruption branch or from `willEnterForeground` — that is [E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing), and it is why this was unrecoverable rather than merely silent. Both are fixed now, so the failure has two independent barriers removed.
+- **Also fixed here, and the same shape of bug:** `skipPreviousSong()` called `stopTimer()` *before* its `guard let currentIndex`, so a Previous that found nothing to step back to returned with the progress display dead **while the audio kept playing** — a frozen position bar on a track that was still audible. Moving the teardown after the lookup was the fix; the rewrite makes it structurally impossible, since the queue decision is now a pure function with no side effects in it.
+- **Also fixed here:** `togglePlayPause()` after the queue ended resumed the engine with `currentlyPlayingID` nil and `duration` zero — audio for a track nothing in the UI knew about, because `stop()` clears the identity but the engine keeps the file rewound to frame 0. It now starts the queue explicitly. `stop()` also clears `nowPlayingInfo` and zeroes `duration`, so there is no stale Control Center entry.
+- **Not covered by tests.** A real `AVAudioSession` is required. **To confirm on device:** the next step is the interesting one — a failed activation should leave the current track playing and audibly finish it, not freeze.
 
 ## F — Theming & Settings
 
@@ -1653,10 +1854,10 @@ That left `tunnelPalette` with no callers, plus `e` and `tint` unused — three 
 
 ## Recommended fix order
 
-**Phase 1 — make it build.** Done. The app target compiles 39 of 41 Swift files and `clean build` succeeds on both simulator and device.
+**Phase 1 — make it build.** Done. The app target compiles 43 of the repository's 47 Swift files — the other four are the test suites, bound to the test targets by design — and `clean build` succeeds on both simulator and device.
 
-1. ~~[A1](#a1-target-membership-silently-swallowed-files) target membership~~ — **fixed**; all four synchronized folders bound to the target, all 39 project files compile
-2. [A2](#a2-both-test-targets-are-empty) test membership, so [G3](#g3-three-incompatible-frequencyband-conventions) can be verified against `Q3analysertests.swift` — **still open**
+1. ~~[A1](#a1-target-membership-silently-swallowed-files) target membership~~ — **fixed**; all four synchronized folders bound to the target, every Swift file the app ships compiles
+2. ~~[A2](#a2-both-test-targets-are-empty) test membership~~ — **done for the two new suites, and deliberately partial.** `Tests/` and `UITests/` are bound to the test targets and removed from the app target's, which is what makes anything testable at all: `Punches3Tests` runs 18 cases and `Punches3UITests` runs 2. `Q3analysertests.swift` is still excluded, because it begins `@testable import silly_speed_ios` and the module is `Punches3` — stale by two renames, so [G3](#g3-three-incompatible-frequencyband-conventions) still cannot be verified against it. Restoring it is a real task, not a project-file edit.
 3. [A3](#a3-app-group-entitlement-is-empty) entitlements — still blocking the import/share path, and still the prerequisite for all of section B. Note `LibraryEnvironment` now degrades to an app-private `Documents/Punches/` and logs a `fault` rather than silently falling back to the Documents root.
 4. [E2](#e2-rt-closure-calls-a-main-actor-method) — nominal isolation, not a compile error; fix with [E1](#e1-rt-thread-allocates-19-mbs) in Phase 3
 
@@ -1682,9 +1883,9 @@ That left `tunnelPalette` with no callers, plus `e` and `tint` unused — three 
 
 **Phase 4 — make the features real.**
 
-11. [D2](#d2-tempo-control-is-commented-out) (one line) · [D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue) · [D4](#d4-no-volume-control) · [C6](#c6-tempo-pitch-and-loop-are-not-persisted)
-12. [E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block) (move two lines out of a `do` block) · [E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing) (update now-playing info in two branches)
-13. [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song) — pick one advance mechanism, clear `onPlaybackFinished` on stop
+11. [D2](#d2-tempo-control-is-commented-out) (one line) · [D4](#d4-no-volume-control) · ~~[D1](#d1-loop-is-honoured-only-at-the-end-of-the-queue)~~ · ~~[C6](#c6-tempo-pitch-and-loop-are-not-persisted)~~ — **both done.** The `repeat.1` glyph is gone and the flag repeats the whole queue; tempo, pitch and loop all persist.
+12. ~~[E16](#e16-remote-commands-are-registered-inside-the-session-setup-do-block)~~ · ~~[E14](#e14-an-interruption-leaves-state-that-reads-as-still-playing)~~ — **both done.** Remote registration moved out of the `do`; `.ended` re-activates whether or not `.shouldResume` arrived, and the rate and the in-app player are both republished.
+13. ~~[E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song)~~ — **done.** One `advance(_:)` driven by the engine's last-buffer completion, behind an in-flight guard; staleness handled by a `PlaybackRun` generation token rather than by clearing the handler. With it, [E18](#e18-seeking-near-the-end-of-a-track-advanced-the-queue), [E19](#e19-the-progress-timer-is-a-run-loop-timer-so-it-stops-when-it-matters) and [E20](#e20-the-audio-engine-touched-hardware-at-launch-and-could-abort-the-process). Queue integrity: [C4](#c4-reordering-does-not-update-playbackqueue) and [C21](#c21-deleting-the-playing-track-silently-rewound-the-queue-to-the-first-song).
 14. [B4](#b4-multi-file-import-silently-takes-the-first-file) · [B5](#b5-import-errors-are-completely-invisible) · [B9](#b9-playlist-detail-share-hands-out-the-live-file)
 15. [F1](#f1-appearancemode-never-reaches-the-swiftui-environment) · [F3](#f3-water-tunnel-and-smoke-are-mutually-exclusive-by-construction) · ~~[G9](#g9-the-tunnel-shader-ignored-themetunnelcolor-entirely)~~ — **fixed**; `theme.tunnelColor` reaches the shader again. **Needs a visual check before release**: restoring the palette line changes how the tunnel looks, and that was verified only by confirming the shader compiles and `tunnelPalette` is present in the built `default.metallib`. [F13](#f13-fogcolor-fogspeed-tunnelcolor-have-no-controls) remains open.
 16. ~~[D14](#d14-no-metadata-is-read-anywhere-the-title-is-the-filename)~~ — **done.** Shipped after C12, in the same change as the `AudioFile` decoder that C12 made possible.
@@ -1697,7 +1898,7 @@ That left `tunnelPalette` with no callers, plus `e` and `tint` unused — three 
 
 **Phase 6 — cleanup.**
 
-20. Delete [D5](#d5-spectrumview-has-zero-call-sites), [D8](#d8-the-32-band-analyser-output-is-unused), [D9](#d9-commented-out-visualisation-modes), [B11](#b11-contentviewshareurl-is-dead-code), [A8](#a8-workspace-file-is-copied-into-the-app-bundle), the dead `@State volume`, the `AVAudioPlayerDelegate` conformance on `AudioManager` (unreachable — see [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song)), and the `#if DEBUG` timing wrapper's per-callback syscall.
+20. Delete [D5](#d5-spectrumview-has-zero-call-sites), [D8](#d8-the-32-band-analyser-output-is-unused), [D9](#d9-commented-out-visualisation-modes), [B11](#b11-contentviewshareurl-is-dead-code), [A8](#a8-workspace-file-is-copied-into-the-app-bundle), the dead `@State volume`, and the `#if DEBUG` timing wrapper's per-callback syscall. ~~The `AVAudioPlayerDelegate` conformance on `AudioManager`~~ — **done**, deleted as part of [E15](#e15-two-racing-mechanisms-advance-the-queue-and-a-stale-completion-can-skip-a-just-started-song). It was unreachable — nothing in the project is an `AVAudioPlayer` — but it read like the completion path, which is worse than absence.
 21. Fix [D10](#d10-the-root-readmemd-requirements-are-wrong-by-a-decade) — the root README actively misleads anyone trying to build this.
 22. [D15](#d15-roughly-one-line-reference-in-seven-no-longer-points-where-it-claims-to) — 67 dead `file:line` references across `docs/`, 20 of them naming a file deleted in the `laptop` merge. Worth doing before the suite is trusted as evidence, and cheapest done by switching to symbol names rather than a sweep of 67 numbers.
 

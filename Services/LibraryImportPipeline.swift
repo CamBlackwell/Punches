@@ -749,7 +749,19 @@ final class LibraryImportPipeline {
             manager.finishOneImport()
         }
 
-        if manager.playbackQueue.count == manager.audioFiles.count - 1 {
+        // Only rebuild the queue if the queue *is* the library view. The whole
+        // library is one queue only when the Songs tab is the source of truth;
+        // a playlist queue is a deliberate subset and must survive an import
+        // that happens to satisfy the old count heuristic.
+        //
+        // The old check — `playbackQueue.count == audioFiles.count - 1` — is a
+        // coincidence of sizes, not a statement about which list the queue came
+        // from. A playlist whose length happened to be `count - 1` had its
+        // queue silently replaced by the entire library, and the file just
+        // imported was not even in it.
+        let queueIsLibrary = manager.playingFromSongsTab
+            || manager.currentlyPlayingID == nil
+        if queueIsLibrary, manager.playbackQueue.count == manager.audioFiles.count - 1 {
             manager.playbackQueue = manager.sortedAudioFiles
         }
     }
